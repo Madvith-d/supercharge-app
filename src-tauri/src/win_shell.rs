@@ -22,23 +22,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Manager, WebviewWindow};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_SERVER, COINIT_APARTMENTTHREADED,
-};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetFocus, SetFocus, VK_LBUTTON,
 };
-use windows::Win32::UI::Shell::{
-    ExtractIconExW, ITaskbarList, SetCurrentProcessExplicitAppUserModelID, TaskbarList,
-};
+use windows::Win32::UI::Shell::{ExtractIconExW, SetCurrentProcessExplicitAppUserModelID};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DrawMenuBar, GetClassNameW, GetPropW, GetWindow, GetWindowLongPtrW,
-    GetWindowLongW, IsChild, IsWindowVisible, RemovePropW, SendMessageW, SetClassLongPtrW, SetMenu,
-    SetPropW, SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GCLP_HICON, GCLP_HICONSM,
-    GWLP_HWNDPARENT, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, GW_OWNER, HICON,
-    HWND_NOTOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    WA_ACTIVE, WA_CLICKACTIVE, WM_ACTIVATE, WM_NCDESTROY, WM_SETFOCUS, WM_SETICON, WNDPROC,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    GetWindowLongW, GetWindowThreadProcessId, IsChild, IsWindow, IsWindowVisible, RemovePropW,
+    SendMessageW, SetClassLongPtrW, SetMenu, SetPropW, SetWindowLongPtrW, SetWindowLongW,
+    SetWindowPos, GCLP_HICON, GCLP_HICONSM, GWLP_HWNDPARENT, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE,
+    GW_CHILD, GW_HWNDNEXT, GW_OWNER, HICON, HWND_NOTOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WA_ACTIVE, WA_CLICKACTIVE, WM_ACTIVATE, WM_NCDESTROY,
+    WM_SETFOCUS, WM_SETICON, WNDPROC, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
 };
 
 /// Call once early in process startup (before or right after creating the main window).
@@ -63,16 +60,37 @@ pub fn primary_mouse_button_down() -> bool {
     unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) < 0 }
 }
 
+/// Dispatch before looking up the HWND: Tauri's off-thread HWND getter can wait.
+fn on_window_thread(
+    window: &WebviewWindow,
+    apply: impl FnOnce(&WebviewWindow, HWND) + Send + 'static,
+) {
+    let target = window.clone();
+    if let Err(error) = window.run_on_main_thread(move || {
+        let Ok(hwnd) = target.hwnd() else {
+            return;
+        };
+        let mut process = 0;
+        let valid = unsafe {
+            IsWindow(Some(hwnd)).as_bool()
+                && GetWindowThreadProcessId(hwnd, Some(&mut process)) == GetCurrentThreadId()
+                && process == std::process::id()
+        };
+        if valid {
+            apply(&target, hwnd);
+        }
+    }) {
+        tracing::warn!(%error, "win_shell: could not dispatch window operation");
+    }
+}
+
 /// Desktop-pet overlay: drop the Win32 menu bar (File / Edit / Window / Help).
 ///
 /// Tauri `app.set_menu` attaches the app-wide menu to every window that did not
 /// install its own. `SetMenu(NULL)` + `DrawMenuBar` collapses the extra strip
 /// even when `decorations(false)` left the muda bar painted.
 pub fn strip_overlay_native_menu(window: &WebviewWindow) {
-    let Ok(hwnd) = window.hwnd() else {
-        return;
-    };
-    unsafe {
+    on_window_thread(window, |_, hwnd| unsafe {
         let _ = SetMenu(hwnd, None);
         let _ = DrawMenuBar(hwnd);
         let _ = SetWindowPos(
@@ -84,24 +102,23 @@ pub fn strip_overlay_native_menu(window: &WebviewWindow) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
         );
-    }
+    });
 }
 
 /// Ensure the main window is a normal taskbar / Alt-Tab / Show-Desktop participant.
 ///
 /// Safe to call repeatedly (setup, show-from-tray, after skip_taskbar restore).
 pub fn ensure_main_window_shell_integration(window: &WebviewWindow) {
-    if let Some(icon) = window.app_handle().default_window_icon() {
-        if let Err(e) = window.set_icon(icon.clone()) {
-            tracing::warn!("win_shell: default_window_icon: {e}");
+    on_window_thread(window, |window, hwnd| {
+        if let Some(icon) = window.app_handle().default_window_icon() {
+            if let Err(e) = window.set_icon(icon.clone()) {
+                tracing::warn!("win_shell: default_window_icon: {e}");
+            }
         }
-    }
-    let Ok(hwnd) = window.hwnd() else {
-        tracing::warn!("win_shell: no hwnd for main window");
-        return;
-    };
-    ensure_hwnd_shell_integration(hwnd, /*register_taskbar*/ true);
-    attach_hwnd_webview_keyboard_focus(hwnd);
+        ensure_hwnd_shell_integration(hwnd);
+        attach_hwnd_webview_keyboard_focus(hwnd);
+        crate::win_taskbar::set_tab(hwnd, true, Some(crate::win_taskbar_overlay::last_count()));
+    });
 }
 
 /// Push the exe's first icon onto ICON_BIG / ICON_SMALL before Explorer AddTab.
@@ -170,14 +187,41 @@ pub fn overlay_skip_taskbar_exstyle(ex: u32) -> u32 {
 /// Force skip-taskbar on a tool overlay (desktop pet). Must not call
 /// [`ensure_main_window_shell_integration`] — that re-applies APPWINDOW.
 pub fn set_overlay_skip_taskbar(window: &WebviewWindow) {
-    let Ok(hwnd) = window.hwnd() else {
-        return;
-    };
-    unsafe {
-        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-        let next = overlay_skip_taskbar_exstyle(ex);
-        if next != ex {
-            SetWindowLongW(hwnd, GWL_EXSTYLE, next as i32);
+    on_window_thread(window, |_, hwnd| {
+        unsafe {
+            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            let next = overlay_skip_taskbar_exstyle(ex);
+            if next != ex {
+                SetWindowLongW(hwnd, GWL_EXSTYLE, next as i32);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
+                );
+            }
+        }
+        crate::win_taskbar::set_tab(hwnd, false, None);
+    });
+}
+
+/// Apply or clear "live in tray only" extended styles + taskbar tab.
+/// Prefer this over bare `set_skip_taskbar` so TOOLWINDOW/APPWINDOW stay consistent.
+pub fn set_main_window_skip_taskbar(window: &WebviewWindow, skip: bool) {
+    on_window_thread(window, move |_, hwnd| {
+        unsafe {
+            let mut ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            if skip {
+                ex |= WS_EX_TOOLWINDOW.0;
+                ex &= !WS_EX_APPWINDOW.0;
+            } else {
+                ex &= !WS_EX_TOOLWINDOW.0;
+                ex |= WS_EX_APPWINDOW.0;
+            }
+            SetWindowLongW(hwnd, GWL_EXSTYLE, ex as i32);
             let _ = SetWindowPos(
                 hwnd,
                 None,
@@ -188,45 +232,16 @@ pub fn set_overlay_skip_taskbar(window: &WebviewWindow) {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
             );
         }
-        taskbar_set_tab(hwnd, false);
-    }
-}
-
-/// Apply or clear "live in tray only" extended styles + taskbar tab.
-/// Prefer this over bare `set_skip_taskbar` so TOOLWINDOW/APPWINDOW stay consistent.
-pub fn set_main_window_skip_taskbar(window: &WebviewWindow, skip: bool) {
-    let Ok(hwnd) = window.hwnd() else {
-        return;
-    };
-    unsafe {
-        let mut ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-        if skip {
-            ex |= WS_EX_TOOLWINDOW.0;
-            ex &= !WS_EX_APPWINDOW.0;
-        } else {
-            ex &= !WS_EX_TOOLWINDOW.0;
-            ex |= WS_EX_APPWINDOW.0;
+        if !skip {
+            // Re-assert native styles and icons before the worker refreshes the tab.
+            ensure_hwnd_shell_integration(hwnd);
+            attach_hwnd_webview_keyboard_focus(hwnd);
         }
-        SetWindowLongW(hwnd, GWL_EXSTYLE, ex as i32);
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
-        );
-        taskbar_set_tab(hwnd, !skip);
-    }
-    if !skip {
-        // Full re-assert (minimize box, owner clear, not topmost, refresh tab).
-        ensure_hwnd_shell_integration(hwnd, /*register_taskbar*/ true);
-        attach_hwnd_webview_keyboard_focus(hwnd);
-    }
+        crate::win_taskbar::set_tab(hwnd, !skip, Some(crate::win_taskbar_overlay::last_count()));
+    });
 }
 
-fn ensure_hwnd_shell_integration(hwnd: HWND, register_taskbar: bool) {
+fn ensure_hwnd_shell_integration(hwnd: HWND) {
     apply_exe_window_icons(hwnd);
     unsafe {
         // Clear accidental owner (GWLP_HWNDPARENT on a top-level window is the owner).
@@ -283,44 +298,6 @@ fn ensure_hwnd_shell_integration(hwnd: HWND, register_taskbar: bool) {
         } else {
             let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, flags | SWP_NOZORDER);
         }
-
-        if register_taskbar {
-            // Delete+Add forces Explorer to refresh the button / ToggleDesktop set.
-            taskbar_set_tab(hwnd, true);
-        }
-    }
-}
-
-fn taskbar_set_tab(hwnd: HWND, present: bool) {
-    // COM calls are unsafe; the closure body is not covered by `com_scope`'s
-    // outer `unsafe` block (only the call site of `f()` is).
-    let _ = com_scope(|| unsafe {
-        let taskbar: ITaskbarList = CoCreateInstance(&TaskbarList, None, CLSCTX_SERVER)?;
-        taskbar.HrInit()?;
-        if present {
-            let _ = taskbar.DeleteTab(hwnd);
-            taskbar.AddTab(hwnd)?;
-        } else {
-            taskbar.DeleteTab(hwnd)?;
-        }
-        Ok(())
-    });
-}
-
-fn com_scope<F, T>(f: F) -> windows::core::Result<T>
-where
-    F: FnOnce() -> windows::core::Result<T>,
-{
-    unsafe {
-        // CoInitializeEx returns HRESULT (not Result). S_OK / S_FALSE both succeed and
-        // must be balanced with CoUninitialize (MSDN). RPC_E_CHANGED_MODE → skip uninit.
-        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let need_uninit = hr.is_ok();
-        let result = f();
-        if need_uninit {
-            CoUninitialize();
-        }
-        result
     }
 }
 
@@ -334,10 +311,7 @@ static FORWARDING_KEYBOARD_FOCUS: AtomicBool = AtomicBool::new(false);
 ///
 /// Safe to call repeatedly (skips if the original WndProc prop is already set).
 pub fn attach_webview_keyboard_focus(window: &WebviewWindow) {
-    let Ok(hwnd) = window.hwnd() else {
-        return;
-    };
-    attach_hwnd_webview_keyboard_focus(hwnd);
+    on_window_thread(window, |_, hwnd| attach_hwnd_webview_keyboard_focus(hwnd));
 }
 
 fn attach_hwnd_webview_keyboard_focus(hwnd: HWND) {
@@ -539,20 +513,22 @@ mod tests {
     }
 
     #[test]
-    fn applies_exe_icons_before_taskbar_addtab() {
+    fn applies_native_integration_before_single_taskbar_enqueue() {
         let src = include_str!("win_shell.rs");
-        let extract = src
-            .find("ExtractIconExW")
-            .expect("ExtractIconExW loads the exe icon");
-        let seticon = src
-            .find("WM_SETICON")
-            .expect("WM_SETICON pushes ICON_BIG / ICON_SMALL");
-        let addtab = src
-            .rfind("taskbar.AddTab")
-            .expect("AddTab registers the refreshed button");
+        let start = src.find("pub fn set_main_window_skip_taskbar(").unwrap();
+        let end = src[start..]
+            .find("\nfn ensure_hwnd_shell_integration(")
+            .unwrap()
+            + start;
+        let restore = &src[start..end];
+        assert_eq!(restore.matches("crate::win_taskbar::set_tab(").count(), 1);
         assert!(
-            extract < seticon && seticon < addtab,
-            "exe icons must land on the HWND before Explorer AddTab"
+            restore.find("ensure_hwnd_shell_integration(hwnd)").unwrap()
+                < restore.find("crate::win_taskbar::set_tab(").unwrap()
         );
+        let native_end = src[end..].find("/// wry child-webview class").unwrap() + end;
+        let native = &src[end..native_end];
+        assert!(native.contains("apply_exe_window_icons(hwnd)"));
+        assert!(!native.contains("set_tab("));
     }
 }

@@ -5,8 +5,6 @@
 //! (white glyph on transparency). Host picks by taskbar theme, not in-app theme.
 //! **App dock / .exe icons** → generated from `icons/icon (1).png` (do not mix).
 
-use std::sync::Mutex;
-
 use tauri::{
     image::Image,
     menu::{Menu, MenuBuilder, MenuEvent, MenuItem, SubmenuBuilder},
@@ -229,12 +227,15 @@ pub fn hide_to_tray_accessory(app: &AppHandle) {
 }
 
 fn hide_to_tray_inner(app: &AppHandle, hide_dock: bool) {
+    let _timing = crate::window_diagnostics::WindowOperation::start("hide to tray");
     #[cfg(not(target_os = "macos"))]
     let _ = hide_dock;
     // Persist geometry before hide so force-kill while tray-resident still restores
     // the last size/position on next launch (plugin also saves on process Exit;
     // resize is additionally debounced to disk from lib.rs window events).
     {
+        let _timing =
+            crate::window_diagnostics::WindowOperation::start("save geometry before hide");
         use tauri_plugin_window_state::{AppHandleExt, StateFlags};
         let flags = StateFlags::SIZE
             | StateFlags::POSITION
@@ -273,6 +274,7 @@ fn hide_to_tray_inner(app: &AppHandle, hide_dock: bool) {
 
 /// Show and focus the main workbench window (tray Open / dock reopen / after hide-to-tray).
 pub fn show_main_window(app: &AppHandle) {
+    let _timing = crate::window_diagnostics::WindowOperation::start("show from tray");
     // Restore Dock / taskbar presence before showing.
     #[cfg(target_os = "macos")]
     {
@@ -301,13 +303,6 @@ pub fn show_main_window(app: &AppHandle) {
             crate::force_ns_app_activate();
             crate::point_keys_at_webview(&w_for_keys);
         });
-        #[cfg(windows)]
-        {
-            // After show/focus, re-assert styles + taskbar tab once more.
-            crate::win_shell::ensure_main_window_shell_integration(&w);
-            // DeleteTab/AddTab drops ITaskbarList3 overlay; put the last overlay count back.
-            reapply_windows_overlay(app);
-        }
     }
 }
 
@@ -420,18 +415,14 @@ fn load_tray_icon() -> Result<Image<'static>, String> {
 #[cfg(windows)]
 fn apply_tray_icon(app: &AppHandle) -> Result<(), String> {
     let icon = load_tray_icon()?;
-    if let Some(tray) = app.try_state::<Mutex<tauri::tray::TrayIcon>>() {
-        if let Ok(t) = tray.lock() {
-            t.set_icon(Some(icon)).map_err(|e| e.to_string())?;
-        }
+    if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
+        tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 /// Swap the Windows tray badge when the user flips the taskbar theme.
-/// Poll on a background thread; apply `set_icon` on the main thread so we
-/// never hold `Mutex<TrayIcon>` while Windows marshals to the UI thread
-/// (#735-style AB deadlock with `tray_set_busy_count`).
+/// Poll on a background thread; apply native icon changes on the UI thread.
 #[cfg(windows)]
 fn watch_taskbar_theme(app: AppHandle) {
     std::thread::Builder::new()
@@ -507,26 +498,31 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), String> {
     }
 
     let tray = builder.build(app).map_err(|e| e.to_string())?;
-    app.manage(Mutex::new(tray));
+    // TrayIcon already dispatches native changes; an outer mutex can deadlock
+    // when a worker holds it while waiting for the UI thread.
+    app.manage(tray);
     #[cfg(windows)]
     watch_taskbar_theme(app.clone());
     Ok(())
 }
 
 /// Rebuild recent list / usage after sessions or account change.
-pub fn refresh_menu(app: &AppHandle) -> Result<(), String> {
-    let menu = build_menu(app).map_err(|e| e.to_string())?;
-    if let Some(tray) = app.try_state::<Mutex<tauri::tray::TrayIcon>>() {
-        if let Ok(t) = tray.lock() {
-            t.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+pub async fn refresh_menu(app: &AppHandle) -> Result<(), String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let menu = build_menu(&app).map_err(|e| e.to_string())?;
+        if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
+            tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
         }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("tray refresh: {e}"))?
 }
 
 #[tauri::command]
-pub fn tray_refresh(app: AppHandle) -> Result<(), String> {
-    refresh_menu(&app)
+pub async fn tray_refresh(app: AppHandle) -> Result<(), String> {
+    refresh_menu(&app).await
 }
 
 /// Pure: dock badge count value. `0` → clear (`None`).
@@ -600,21 +596,19 @@ pub fn set_busy_count(app: &AppHandle, count: u32) {
 
     // Tray tooltip (all platforms) + macOS menu-bar numeric title so the count
     // is visible even when the Dock icon is hidden (close-to-tray / Accessory).
-    if let Some(tray) = app.try_state::<Mutex<tauri::tray::TrayIcon>>() {
-        if let Ok(t) = tray.lock() {
-            if let Err(e) = t.set_tooltip(Some(tip.as_str())) {
-                tracing::debug!(error = %e, "tray set_tooltip failed");
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let title = if count == 0 {
-                    None
-                } else {
-                    Some(count.to_string())
-                };
-                if let Err(e) = t.set_title(title.as_deref()) {
-                    tracing::debug!(error = %e, "tray set_title failed");
-                }
+    if let Some(tray) = app.try_state::<tauri::tray::TrayIcon>() {
+        if let Err(e) = tray.set_tooltip(Some(tip.as_str())) {
+            tracing::debug!(error = %e, "tray set_tooltip failed");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let title = if count == 0 {
+                None
+            } else {
+                Some(count.to_string())
+            };
+            if let Err(e) = tray.set_title(title.as_deref()) {
+                tracing::debug!(error = %e, "tray set_title failed");
             }
         }
     } else {
@@ -624,22 +618,8 @@ pub fn set_busy_count(app: &AppHandle, count: u32) {
 
 #[cfg(windows)]
 fn apply_windows_overlay(window: &tauri::WebviewWindow, count: u32) {
-    match crate::win_taskbar_overlay::overlay_rgba(count) {
-        Some(rgba) => {
-            let icon = Image::new_owned(
-                rgba,
-                crate::win_taskbar_overlay::SIZE,
-                crate::win_taskbar_overlay::SIZE,
-            );
-            if let Err(e) = window.set_overlay_icon(Some(icon)) {
-                tracing::debug!(error = %e, count, "set_overlay_icon failed");
-            }
-        }
-        None => {
-            if let Err(e) = window.set_overlay_icon(None) {
-                tracing::debug!(error = %e, "clear overlay icon failed");
-            }
-        }
+    if let Ok(hwnd) = window.hwnd() {
+        crate::win_taskbar::set_overlay(hwnd, count);
     }
 }
 
@@ -652,14 +632,6 @@ fn set_windows_overlay_count(app: &AppHandle, count: u32) {
         apply_windows_overlay(&w, count);
     } else {
         tracing::debug!(count, "set_windows_overlay: main window missing");
-    }
-}
-
-#[cfg(windows)]
-fn reapply_windows_overlay(app: &AppHandle) {
-    let count = crate::win_taskbar_overlay::last_count();
-    if let Some(w) = app.get_webview_window("main") {
-        apply_windows_overlay(&w, count);
     }
 }
 

@@ -264,6 +264,7 @@ mod wallpaper_web_search;
 mod wallpaper_x_responses;
 mod wallpaper_x_search;
 
+mod window_diagnostics;
 mod window_min;
 
 mod safe_https_client;
@@ -283,6 +284,10 @@ mod mac_ime_fn_bridge;
 mod win_file_drop;
 #[cfg(windows)]
 mod win_shell;
+#[cfg(windows)]
+mod win_taskbar;
+#[cfg(all(test, not(windows)))]
+mod win_taskbar_queue;
 
 mod x_evidence;
 
@@ -499,6 +504,7 @@ pub fn run() {
 
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
+                    let _timing = window_diagnostics::WindowOperation::start("close requested");
                     // Pet overlay: hide (keep prefs in sync). Do not destroy the HWND
                     // via File>Close — that used to leave the toggle stuck.
                     if window.label() == pet_window::PET_WINDOW_LABEL {
@@ -513,7 +519,9 @@ pub fn run() {
                     }
 
                     let settings = store::load_settings();
-                    let any_enabled = store::load_automations().iter().any(|a| a.enabled);
+                    let any_enabled = !settings.close_to_tray
+                        && settings.keep_tray_for_schedules
+                        && store::load_automations().iter().any(|a| a.enabled);
                     let hide = automation_runner::should_hide_to_tray_on_close(
                         settings.close_to_tray,
                         settings.keep_tray_for_schedules,
@@ -567,6 +575,7 @@ pub fn run() {
         })
 
         .setup(|app| {
+            let _timing = window_diagnostics::WindowOperation::start("startup setup");
 
             crate::path_scope::refresh_from_store();
 
@@ -1231,6 +1240,7 @@ fn main_window_state_flags() -> tauri_plugin_window_state::StateFlags {
 
 /// Immediately write main-window geometry to `.window-state.json`.
 fn persist_main_window_state(app: &tauri::AppHandle) {
+    let _timing = window_diagnostics::WindowOperation::start("save window geometry");
     use tauri_plugin_window_state::AppHandleExt;
     if let Err(e) = app.save_window_state(main_window_state_flags()) {
         tracing::debug!(error = %e, "window-state save failed");
@@ -1254,7 +1264,11 @@ fn schedule_persist_main_window_state(app: &tauri::AppHandle) {
         // getters block on the main thread, which may itself be waiting on
         // that mutex inside the plugin's Resized handler. Hop back first.
         let app2 = app.clone();
-        let _ = app.run_on_main_thread(move || persist_main_window_state(&app2));
+        let _ = app.run_on_main_thread(move || {
+            if GENERATION.load(Ordering::Relaxed) == gen {
+                persist_main_window_state(&app2);
+            }
+        });
     });
 }
 

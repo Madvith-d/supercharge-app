@@ -304,7 +304,7 @@ pub async fn settings_set(
     {
         tracing::warn!("settings_set apply_permission: {e}");
     }
-    if let Err(e) = crate::tray::refresh_menu(&app) {
+    if let Err(e) = crate::tray::refresh_menu(&app).await {
         tracing::warn!("settings_set tray refresh: {e}");
     }
     if let Err(e) = crate::app_menu::refresh(&app) {

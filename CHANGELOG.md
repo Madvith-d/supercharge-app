@@ -13,6 +13,28 @@ See `docs/llm-wiki/release.md`.
 
 ## [Unreleased]
 
+## [0.2.45] - 2026-10-01
+
+> **Highlight:** Windows taskbar and tray updates no longer block window controls.
+>
+> **中文 · 亮点：** Windows 任务栏和托盘更新不再阻塞窗口控制。
+
+### Added
+- Plugins can connect through an authenticated local API.
+
+### Fixed
+- Windows taskbar updates run separately from window controls.
+- Tray menu updates avoid a locking conflict that could freeze the app.
+- Closing the window skips unnecessary schedule checks.
+
+**中文 · 新增**
+- 插件可通过经过身份验证的本地 API 连接应用。
+
+**中文 · 修复**
+- Windows 任务栏更新与窗口控制分开运行。
+- 托盘菜单更新避免了可能导致应用卡死的锁冲突。
+- 关闭窗口时跳过不必要的计划任务检查。
+
 ## [0.2.44] - 2026-09-24
 
 > **Highlight:** Resizing the window is much smoother, and the chat stays pinned when a thinking block collapses.
