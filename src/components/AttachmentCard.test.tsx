@@ -110,7 +110,13 @@ describe("inline CLI attachments", () => {
     const attachment = { path: `data:${mime};base64,AA==`, name: "attachment", isDir: false };
     const onRemove = vi.fn();
     const { rerender } = render(<AttachmentCard attachment={attachment} labels={labels} variant="chip" onRemove={onRemove} />);
-    fireEvent.click(screen.getByRole("button", { name: createT("de")("composer.attachRemove") }));
+    const removeButton = screen.getByRole("button", { name: createT("de")("composer.attachRemove") });
+    if (mime.startsWith("audio/") || mime.startsWith("video/")) {
+      const mediaCard = removeButton.closest<HTMLElement>(".att-card-media");
+      expect(mediaCard?.style.position).toBe("relative");
+      expect(mediaCard?.querySelector(".att-card__btn")).toBeTruthy();
+    }
+    fireEvent.click(removeButton);
     expect(onRemove).toHaveBeenCalledExactlyOnceWith(attachment);
 
     const remove = tr("composer.attachRemove");

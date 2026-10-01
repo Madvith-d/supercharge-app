@@ -282,7 +282,8 @@ export function AttachmentCard({
   if (mediaKind) {
     return (
       <div
-        style={{ maxWidth: "100%", width: mediaOpen ? 300 : undefined }}
+        className="att-card-media"
+        style={{ position: "relative", maxWidth: "100%", width: mediaOpen ? 300 : undefined }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
       >
         <div className="att-card">
