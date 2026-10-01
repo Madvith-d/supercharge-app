@@ -17,6 +17,8 @@ use crate::{
 pub fn app_invoke_handler(
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        // ── Native window chrome ──
+        commands::window_caption_action,
         // ── Sessions, turns, permissions & local session API ──
         commands::session_get_state,
         commands::session_connect,

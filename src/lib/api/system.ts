@@ -6,6 +6,16 @@ import {
   isDesktopHost,
 } from "./host";
 
+/**
+ * Native custom-caption action. On Windows the Host posts directly to the
+ * HWND, bypassing Tauri's window user-event queue.
+ */
+export async function windowCaptionAction(
+  action: "minimize" | "toggleMaximize",
+) {
+  return invoke<void>("window_caption_action", { action });
+}
+
 /** Paths that exist among candidates (desktop host path probe). */
 export type PathExistsResult = {
   existing: string[];

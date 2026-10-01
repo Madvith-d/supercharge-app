@@ -2156,7 +2156,6 @@ export function AppWorkbench() {
   useEffect(() => {
     if (!api.isDesktopHost() || !api.isTauri()) return;
     let unlistenResize: (() => void) | undefined;
-    let unlistenMoved: (() => void) | undefined;
     let unlistenScale: (() => void) | undefined;
     let resizeSyncTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
@@ -2186,13 +2185,6 @@ export function AppWorkbench() {
           syncMaximizedAfterResize();
         });
         try {
-          unlistenMoved = await w.onMoved(() => {
-            syncMaximizedAfterResize();
-          });
-        } catch {
-          /* older API */
-        }
-        try {
           unlistenScale = await w.onScaleChanged(() => {
             void sync();
           });
@@ -2201,7 +2193,6 @@ export function AppWorkbench() {
         }
         if (cancelled) {
           unlistenResize?.();
-          unlistenMoved?.();
           unlistenScale?.();
         }
       } catch {
@@ -2212,7 +2203,6 @@ export function AppWorkbench() {
       cancelled = true;
       if (resizeSyncTimer != null) clearTimeout(resizeSyncTimer);
       unlistenResize?.();
-      unlistenMoved?.();
       unlistenScale?.();
     };
   }, []);

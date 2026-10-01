@@ -11,7 +11,9 @@
  * (window grows downward; you cannot lift it).
  */
 
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppPlatform } from "@/lib/appPlatform";
+import { windowCaptionAction } from "@/lib/api/system";
 import { detectAppPlatform } from "@/lib/appPlatform";
 
 export const TITLEBAR_MAXIMIZE_DEBOUNCE_MS = 400;
@@ -21,13 +23,6 @@ export const OS_MAXIMIZE_POLL_MS = 16;
 
 /** Linux: short wait then work-area fill. */
 export const LINUX_MAXIMIZE_WAIT_MS = 40;
-
-/**
- * Caption min/max/close: wait until the pointer is fully up before
- * maximize(). Otherwise Windows treats the still-held click as a drag on
- * a maximized window and immediately restores (flash).
- */
-export const CAPTION_BUTTON_TOGGLE_DEFER_MS = 32;
 
 /** Work-area fill is only for compositors that ignore gtk_window_maximize. */
 export function shouldFakeMaximizeFallback(platform: AppPlatform): boolean {
@@ -51,13 +46,6 @@ export function tauriDragRegion(_platform: AppPlatform): "false" | "deep" {
 
 export function osMaximizeWaitMs(allowFakeFallback: boolean): number {
   return allowFakeFallback ? LINUX_MAXIMIZE_WAIT_MS : 0;
-}
-
-export function scheduleCaptionButtonToggle(
-  fn: () => void,
-  deferMs: number = CAPTION_BUTTON_TOGGLE_DEFER_MS,
-): ReturnType<typeof setTimeout> {
-  return setTimeout(fn, Math.max(0, deferMs));
 }
 
 /** Double-click / mousedown(detail=2) must not toggle twice. */
@@ -168,31 +156,49 @@ async function waitForOsMaximized(
  * Windows/mac: one OS call, no wait, no setSize. Returns the intended
  * caption state; onResized corrects the glyph if the OS disagrees.
  */
+export async function minimizeWindowReliable(): Promise<void> {
+  if (detectAppPlatform() === "win") {
+    await windowCaptionAction("minimize");
+    return;
+  }
+  await getCurrentWindow().minimize();
+}
+
 export async function toggleMaximizeReliable(): Promise<boolean> {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const w = getCurrentWindow();
-  const allowFake = shouldFakeMaximizeFallback(detectAppPlatform());
-  const wasOs = await w.isMaximized().catch(() => false);
+  const platform = detectAppPlatform();
+  const allowFake = shouldFakeMaximizeFallback(platform);
+
+  if (platform === "win") {
+    // Native ShowWindowAsync posts straight to the HWND owner. Do not read
+    // isMaximized first: that would put another IPC round-trip before action.
+    await windowCaptionAction("toggleMaximize");
+    return w.isMaximized().catch(() => false);
+  }
 
   if (!allowFake) {
     fakeMaximized = false;
     restoreBounds = null;
-    if (wasOs) {
+    // Ask the window manager to toggle directly. Reading isMaximized first
+    // adds a round trip before the visible action and can go stale on rapid
+    // clicks; the resize event reconciles the caption state afterward.
+    try {
+      await w.toggleMaximize();
+    } catch {
+      // Keep the older explicit path as a recovery for hosts that reject the
+      // toggle command; this is exceptional, not part of the normal click path.
+      const wasMaximized = await w.isMaximized().catch(() => false);
       try {
-        await w.unmaximize();
+        if (wasMaximized) await w.unmaximize();
+        else await w.maximize();
       } catch {
         /* ignore */
       }
-      return false;
     }
-    try {
-      await w.maximize();
-    } catch {
-      /* ignore */
-    }
-    return true;
+    return w.isMaximized().catch(() => false);
   }
 
+  const wasOs = await w.isMaximized().catch(() => false);
   const waitMs = osMaximizeWaitMs(true);
   const was = wasOs || fakeMaximized;
 

@@ -552,10 +552,15 @@ pub fn run() {
                     if window.label() == "main" =>
                 {
                     window_min::apply_main(window.app_handle());
+                    // On Windows, synchronous window-state serialization on the
+                    // UI thread can queue behind resize and delay the next
+                    // caption command. The plugin cache is still saved on Exit.
+                    #[cfg(not(windows))]
                     schedule_persist_main_window_state(window.app_handle());
                 }
                 WindowEvent::Resized(_)
                     if window.label() == "main" => {
+                        #[cfg(not(windows))]
                         schedule_persist_main_window_state(window.app_handle());
                     }
                 WindowEvent::Focused(focused) if window.label() == "main" => {

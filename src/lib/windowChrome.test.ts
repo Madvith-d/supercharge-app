@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  CAPTION_BUTTON_TOGGLE_DEFER_MS,
   maximizeLooksNoop,
   osMaximizeWaitMs,
-  scheduleCaptionButtonToggle,
   shouldAcceptTitlebarMaximize,
   shouldFakeMaximizeFallback,
   tauriDragRegion,
@@ -92,17 +90,23 @@ describe("osMaximizeWaitMs", () => {
   });
 });
 
-describe("scheduleCaptionButtonToggle", () => {
-  it("defers past mouse-up so Windows does not drag-to-restore", () => {
-    expect(CAPTION_BUTTON_TOGGLE_DEFER_MS).toBeGreaterThan(0);
-    vi.useFakeTimers();
-    const fn = vi.fn();
-    scheduleCaptionButtonToggle(fn, CAPTION_BUTTON_TOGGLE_DEFER_MS);
-    expect(fn).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(CAPTION_BUTTON_TOGGLE_DEFER_MS - 1);
-    expect(fn).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(fn).toHaveBeenCalledTimes(1);
-    vi.useRealTimers();
+describe("Windows caption controls", () => {
+  it("dispatches from click without a timer and avoids maximize checks on move", () => {
+    const controls = readFileSync(
+      join(__dirname, "../components/WindowControls.tsx"),
+      "utf8",
+    );
+    const nativeHost = readFileSync(
+      join(__dirname, "../../src-tauri/src/win_shell.rs"),
+      "utf8",
+    );
+    expect(controls).toContain('void winChrome("toggleMaximize")');
+    expect(controls).toContain("minimizeWindowReliable()");
+    expect(controls).toContain(".onResized(");
+    expect(controls).not.toContain(".onMoved(");
+    expect(controls).not.toContain("setMaximized((value) => !value)");
+    expect(controls).not.toContain("scheduleCaptionButtonToggle");
+    expect(nativeHost).toContain("ShowWindowAsync(hwnd, command)");
+    expect(nativeHost).toContain("static MAIN_HWND: AtomicIsize");
   });
 });
