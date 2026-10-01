@@ -1,5 +1,6 @@
 /** Merged ko message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { koCore } from "./core";
 import { koSidebar } from "./sidebar";
 import { koProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const ko: Record<MessageKey, string> = {
   ...koCore,
   ...updateMessages["ko"],
+  ...pluginApiMessages.ko,
   ...koSidebar,
   ...koProject,
   ...koSession,

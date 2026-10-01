@@ -988,6 +988,14 @@ impl SessionManager {
                 }
                 let cwd_str = cwd.to_string_lossy().to_string();
                 acp.bind_browser_session(&meta.id);
+                match crate::managed_plugin_bridge::prepare_for_launch(&meta.id) {
+                    Ok(true) => acp.bind_managed_plugin_session(&meta.id),
+                    Ok(false) => {}
+                    Err(error) => {
+                        crate::managed_plugin_bridge::fail(&meta.id, error.clone());
+                        tracing::warn!(session = %meta.id, %error, "managed MCP unavailable during warm reconnect");
+                    }
+                }
                 let open_result = Self::with_handshake_budget(acp.open_session_at(
                     resume_agent_sid.as_deref(),
                     false,
@@ -1001,7 +1009,7 @@ impl SessionManager {
                             let mut guard = self.inner.lock();
                             if let Some(s) = guard.as_mut() {
                                 let _ = s.fsm.handshake_ok();
-                                s.acp = Some(acp);
+                                s.acp = Some(acp.clone());
                                 s.process_id = reused_process;
                                 s.meta.agent_session_id = Some(agent_sid.clone());
                                 s.model_id = Some(prefs.model_id.clone());
@@ -1026,6 +1034,13 @@ impl SessionManager {
                             "connect warm-reuse ok"
                         );
                         emit_host_exit_heal(&app, &meta.id);
+                        self.managed_plugin_after_connect(
+                            &meta.id,
+                            &agent_sid,
+                            acp.clone(),
+                            cwd_str.clone(),
+                        )
+                        .await;
                         // Refresh the prewarm slot with a FRESH process: the
                         // one we just consumed now hosts this session's actor,
                         // and the CLI has no public unload API — a second load
@@ -1303,6 +1318,14 @@ impl SessionManager {
         );
         let rewind_index = meta.fork_rewind_prompt_index;
         client.bind_browser_session(&meta.id);
+        match crate::managed_plugin_bridge::prepare_for_launch(&meta.id) {
+            Ok(true) => client.bind_managed_plugin_session(&meta.id),
+            Ok(false) => {}
+            Err(error) => {
+                crate::managed_plugin_bridge::fail(&meta.id, error.clone());
+                tracing::warn!(session = %meta.id, %error, "managed MCP unavailable during cold connect");
+            }
+        }
         let open_result = Self::with_handshake_budget(
             client.initialize_and_open_session(resume_agent_sid.as_deref(), fork_agent),
         )
@@ -1504,6 +1527,15 @@ impl SessionManager {
                     }
                 }
                 emit_host_exit_heal(&app, &meta.id);
+                if let Some(agent_session_id) = meta.agent_session_id.as_deref() {
+                    self.managed_plugin_after_connect(
+                        &meta.id,
+                        agent_session_id,
+                        client.clone(),
+                        cwd_str.clone(),
+                    )
+                    .await;
+                }
                 Ok(self.snapshot())
             }
             Err(e) => {

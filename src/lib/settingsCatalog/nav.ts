@@ -65,6 +65,7 @@ export const SETTINGS_NAV: readonly SettingsNavDef[] = [
     tabs: [
       { id: "plugins", labelKey: "ext.plugins.title" },
       { id: "mcp", labelKey: "ext.mcp.title" },
+      { id: "managed-mcp", labelKey: "pluginApi.title" },
       { id: "skills", labelKey: "ext.skills.title" },
       { id: "rules", labelKey: "ext.rules.title" },
       { id: "commands", labelKey: "ext.commands.title" },

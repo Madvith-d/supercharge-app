@@ -352,6 +352,7 @@ pub struct AcpClient {
     event_tx: mpsc::UnboundedSender<(Option<String>, AcpEvent)>,
     agent_session_id: ParkingMutex<Option<String>>,
     browser_binding: ParkingMutex<Option<crate::browser_bridge::BrowserBinding>>,
+    managed_plugin_session: ParkingMutex<Option<(String, String, Value)>>,
     #[allow(dead_code)]
     cli_path: PathBuf,
     cwd: PathBuf,
@@ -1049,6 +1050,7 @@ impl AcpClient {
             event_tx: event_tx.clone(),
             agent_session_id: ParkingMutex::new(None),
             browser_binding: ParkingMutex::new(None),
+            managed_plugin_session: ParkingMutex::new(None),
             cli_path,
             cwd,
             stopped: AtomicBool::new(false),
@@ -1147,6 +1149,7 @@ impl AcpClient {
             event_tx,
             agent_session_id: ParkingMutex::new(None),
             browser_binding: ParkingMutex::new(None),
+            managed_plugin_session: ParkingMutex::new(None),
             cli_path: PathBuf::from(format!("tcp://{addr}")),
             cwd,
             stopped: AtomicBool::new(false),
@@ -1181,6 +1184,82 @@ impl AcpClient {
         match crate::browser_bridge::bind(session_id) {
             Ok(next) => *binding = Some(next),
             Err(error) => warn!(%error, "in-app browser tools unavailable for session"),
+        }
+    }
+
+    pub fn bind_managed_plugin_session(&self, session_id: &str) {
+        if !self.owns_local_process_tree || self.empty_mcp_servers || !cfg!(target_os = "linux") {
+            self.managed_plugin_session.lock().take();
+            return;
+        }
+        match crate::managed_plugin_bridge::entry_for_session(session_id) {
+            Ok(Some(entry)) => match crate::managed_plugin_bridge::state_generation(session_id) {
+                Ok(generation) => {
+                    *self.managed_plugin_session.lock() =
+                        Some((session_id.to_string(), generation, entry));
+                }
+                Err(error) => {
+                    crate::managed_plugin_bridge::fail(session_id, error.clone());
+                    warn!(session = %session_id, %error, "managed MCP binding unavailable");
+                    self.managed_plugin_session.lock().take();
+                }
+            },
+            Ok(None) => {
+                self.managed_plugin_session.lock().take();
+            }
+            Err(error) => {
+                crate::managed_plugin_bridge::fail(session_id, error.clone());
+                warn!(session = %session_id, %error, "managed MCP binding unavailable");
+                self.managed_plugin_session.lock().take();
+            }
+        }
+    }
+
+    fn append_managed_plugin_entry(&self, mcp_servers: &mut Value) -> Result<(), String> {
+        let Some((session_id, _, entry)) = self.managed_plugin_session.lock().clone() else {
+            return Ok(());
+        };
+        let result: Result<(), String> = (|| {
+            let servers = mcp_servers
+                .as_array_mut()
+                .ok_or_else(|| "ACP mcpServers payload must be an array".to_string())?;
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Managed MCP bridge entry has no name".to_string())?;
+            if servers
+                .iter()
+                .any(|server| server.get("name").and_then(Value::as_str) == Some(name))
+            {
+                return Err("Managed MCP bridge name collides with an existing server".into());
+            }
+            servers.push(entry);
+            Ok(())
+        })();
+        if let Err(error) = result.as_ref() {
+            self.managed_plugin_session.lock().take();
+            crate::managed_plugin_bridge::fail(&session_id, error.clone());
+            warn!(session = %session_id, %error, "managed MCP injection skipped");
+            return Ok(());
+        }
+        result
+    }
+
+    pub fn managed_plugin_session_matches(&self, session_id: &str, generation: &str) -> bool {
+        self.managed_plugin_session.lock().as_ref().is_some_and(
+            |(bound_session, bound_generation, _)| {
+                bound_session == session_id && bound_generation == generation
+            },
+        )
+    }
+
+    pub fn clear_managed_plugin_session(&self, session_id: &str) {
+        let mut binding = self.managed_plugin_session.lock();
+        if binding
+            .as_ref()
+            .is_some_and(|(bound_session, _, _)| bound_session == session_id)
+        {
+            binding.take();
         }
     }
 
@@ -2352,6 +2431,9 @@ impl AcpClient {
             }
         }
 
+        self.append_managed_plugin_entry(&mut mcp_servers)
+            .map_err(|error| AgentError::new(AgentErrorCode::AgentCrashed, error))?;
+
         if let Some(rid) = resume_session_id.map(str::trim).filter(|s| !s.is_empty()) {
             // CLI `--fork-session`: new agent session id with parent context.
             if fork_session {
@@ -2568,6 +2650,7 @@ impl AcpClient {
                 servers.push(entry);
             }
         }
+        self.append_managed_plugin_entry(&mut mcp_servers)?;
         self.request_timeout(
             "_x.ai/session/update_mcp_servers",
             json!({
@@ -2579,7 +2662,35 @@ impl AcpClient {
         .await
     }
 
-    /// Switch model on the live agent session (`session/set_model`).
+    pub async fn managed_mcp_list_for(&self, session_id: &str) -> Result<Value, String> {
+        self.request_timeout(
+            "x.ai/mcp/list",
+            json!({ "sessionId": session_id, "cache": false }),
+            HANDSHAKE_TIMEOUT_SECS,
+        )
+        .await
+    }
+
+    pub async fn managed_mcp_call_for(
+        &self,
+        session_id: &str,
+        server: &str,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<Value, String> {
+        self.request_timeout(
+            "x.ai/mcp/call",
+            json!({
+                "sessionId": session_id,
+                "server": server,
+                "tool": tool,
+                "arguments": arguments,
+            }),
+            HANDSHAKE_TIMEOUT_SECS,
+        )
+        .await
+    }
+
     /// Switch model on the live agent session (`session/set_model`).
     /// Uses the process's most recently bound agent session id.
     pub async fn set_model(&self, model_id: &str) -> Result<(), String> {
@@ -3026,6 +3137,7 @@ impl AcpClient {
 
     pub async fn kill(&self) {
         self.browser_binding.lock().take();
+        self.managed_plugin_session.lock().take();
         // Stop both halves of the transport before touching the child. This is
         // essential for TCP ACP: closing only the writer left the reader task
         // alive and allowed ghost events from a remote peer after recycle.

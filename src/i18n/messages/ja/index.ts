@@ -1,5 +1,6 @@
 /** Merged ja message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { jaCore } from "./core";
 import { jaSidebar } from "./sidebar";
 import { jaProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const ja: Record<MessageKey, string> = {
   ...jaCore,
   ...updateMessages["ja"],
+  ...pluginApiMessages.ja,
   ...jaSidebar,
   ...jaProject,
   ...jaSession,

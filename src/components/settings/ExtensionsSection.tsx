@@ -30,6 +30,7 @@ export function ExtensionsSection() {
                 | "plugins"
                 | "skills"
                 | "mcp"
+                | "managed-mcp"
                 | "agents"
                 | "hooks"
                 | "rules"
@@ -39,6 +40,9 @@ export function ExtensionsSection() {
             }
             onTabChange={(next) => setSectionTab(next)}
             onOpenRuntime={() => navigateTo("runtime", "cli")}
+            appSessionId={s.activeAppSessionId}
+            agentSessionId={s.activeAgentSessionId}
+            onOpenAccount={() => navigateTo("account", "providers")}
             onSkillsPrefsChanged={onSkillsPrefsChanged}
           />
     </>

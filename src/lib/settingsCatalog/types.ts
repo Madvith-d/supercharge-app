@@ -52,6 +52,7 @@ export type SettingsTabId =
   | "plugins"
   | "skills"
   | "mcp"
+  | "managed-mcp"
   | "rules"
   | "commands"
   | "agents"

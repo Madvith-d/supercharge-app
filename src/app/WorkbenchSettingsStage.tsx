@@ -744,6 +744,8 @@ export function WorkbenchSettingsStage(p: WorkbenchSettingsStageProps) {
           }}
           archiveAgeSessions={sessions}
           projectPath={effectiveProjectPath}
+          activeAppSessionId={session.sessionId}
+          activeAgentSessionId={session.agentSessionId}
           onOpenProjectFileInResources={({ path, relativePath, line }) => {
           const targetPath = (path || relativePath || "").trim();
           if (!targetPath) return;
