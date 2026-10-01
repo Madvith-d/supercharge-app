@@ -3,7 +3,7 @@
  * non-mac platforms when decorations are disabled. macOS uses Overlay
  * traffic lights.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useWindowCaptionControls } from "@/hooks/useWindowCaptionControls";
 import {
   IconClose,
   IconMaximize,
@@ -12,13 +12,7 @@ import {
 } from "@/components/icons";
 import { Tip } from "@/components/ui/tooltip";
 import { detectAppPlatform } from "@/lib/appPlatform";
-import {
-  CAPTION_BUTTON_TOGGLE_DEFER_MS,
-  isFakeMaximized,
-  scheduleCaptionButtonToggle,
-  toggleMaximizeFromTitlebar,
-  toggleMaximizeReliable,
-} from "@/lib/windowChrome";
+import { toggleMaximizeFromTitlebar } from "@/lib/windowChrome";
 
 export {
   tauriDragRegion,
@@ -36,65 +30,7 @@ type Props = {
 };
 
 export function WindowControls({ visible, labels }: Props) {
-  const [maximized, setMaximized] = useState(false);
-
-  const refreshMaximized = useCallback(async () => {
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const os = await getCurrentWindow().isMaximized();
-      setMaximized(os || isFakeMaximized());
-    } catch {
-      /* browser / no window API */
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!visible) return;
-    void refreshMaximized();
-    let unlistenResize: (() => void) | undefined;
-    let unlistenMoved: (() => void) | undefined;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        const w = getCurrentWindow();
-        const sync = () => {
-          void refreshMaximized();
-        };
-        unlistenResize = await w.onResized(sync);
-        try {
-          unlistenMoved = await w.onMoved(sync);
-        } catch {
-          /* older API */
-        }
-        if (cancelled) {
-          unlistenResize?.();
-          unlistenMoved?.();
-        }
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      cancelled = true;
-      unlistenResize?.();
-      unlistenMoved?.();
-    };
-  }, [visible, refreshMaximized]);
-
-  const winChrome = async (action: "minimize" | "toggleMaximize" | "close") => {
-    try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const w = getCurrentWindow();
-      if (action === "minimize") await w.minimize();
-      if (action === "toggleMaximize") {
-        setMaximized(await toggleMaximizeReliable());
-      }
-      if (action === "close") await w.close();
-    } catch {
-      /* ignore */
-    }
-  };
+  const { maximized, act: winChrome } = useWindowCaptionControls(visible);
 
   if (!visible) return null;
 
@@ -118,7 +54,7 @@ export function WindowControls({ visible, labels }: Props) {
           onPointerDown={stopChromePointer}
           onClick={(e) => {
             e.stopPropagation();
-            void winChrome("minimize");
+            winChrome("minimize");
           }}
         >
           <IconMinimize size={14} />
@@ -133,9 +69,7 @@ export function WindowControls({ visible, labels }: Props) {
           onClick={(e) => {
             e.stopPropagation();
             e.preventDefault();
-            scheduleCaptionButtonToggle(() => {
-              void winChrome("toggleMaximize");
-            }, CAPTION_BUTTON_TOGGLE_DEFER_MS);
+            winChrome("toggleMaximize");
           }}
         >
           {maximized ? <IconRestore size={14} /> : <IconMaximize size={14} />}
@@ -149,7 +83,7 @@ export function WindowControls({ visible, labels }: Props) {
           onPointerDown={stopChromePointer}
           onClick={(e) => {
             e.stopPropagation();
-            void winChrome("close");
+            winChrome("close");
           }}
         >
           <IconClose size={14} />

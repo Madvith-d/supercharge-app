@@ -106,7 +106,8 @@ async function readLogicalBounds(
       w: size.width / f,
       h: size.height / f,
     };
-  } catch {
+  } catch (error) {
+    console.warn("[windowChrome] reading restore bounds failed", error);
     return null;
   }
 }
@@ -139,7 +140,8 @@ async function fillMonitorWorkArea(
     if (!(bounds.w > 80 && bounds.h > 80)) return false;
     await applyLogicalBounds(w, bounds);
     return true;
-  } catch {
+  } catch (error) {
+    console.warn("[windowChrome] Linux work-area fill failed", error);
     return false;
   }
 }
@@ -155,7 +157,7 @@ async function waitForOsMaximized(
 ): Promise<boolean> {
   const start = Date.now();
   for (;;) {
-    const v = await w.isMaximized().catch(() => false);
+    const v = await w.isMaximized();
     if (v === expect) return v;
     if (Date.now() - start >= timeoutMs) return v;
     await new Promise((r) => setTimeout(r, OS_MAXIMIZE_POLL_MS));
@@ -165,64 +167,51 @@ async function waitForOsMaximized(
 /**
  * Maximize / restore. Prefers the OS API; on Linux Wayland no-ops, fills
  * the work area and treats that as maximized until the next toggle.
- * Windows/mac: one OS call, no wait, no setSize. Returns the intended
- * caption state; onResized corrects the glyph if the OS disagrees.
+ * Windows delegates query/mutation ordering to the native toggle. Caption
+ * state is synchronized separately from IPC completion.
  */
-export async function toggleMaximizeReliable(): Promise<boolean> {
+export async function toggleMaximizeReliable(): Promise<boolean | void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const w = getCurrentWindow();
-  const allowFake = shouldFakeMaximizeFallback(detectAppPlatform());
-  const wasOs = await w.isMaximized().catch(() => false);
-
-  if (!allowFake) {
+  const platform = detectAppPlatform();
+  if (platform === "win") {
+    await w.toggleMaximize();
     fakeMaximized = false;
     restoreBounds = null;
-    if (wasOs) {
-      try {
-        await w.unmaximize();
-      } catch {
-        /* ignore */
-      }
-      return false;
-    }
-    try {
-      await w.maximize();
-    } catch {
-      /* ignore */
-    }
-    return true;
+    return;
+  }
+  const allowFake = shouldFakeMaximizeFallback(platform);
+  const wasOs = await w.isMaximized();
+
+  if (!allowFake) {
+    if (wasOs) await w.unmaximize();
+    else await w.maximize();
+    fakeMaximized = false;
+    restoreBounds = null;
+    return !wasOs;
   }
 
   const waitMs = osMaximizeWaitMs(true);
   const was = wasOs || fakeMaximized;
 
   if (was) {
-    fakeMaximized = false;
     if (wasOs) {
-      try {
-        await w.unmaximize();
-      } catch {
-        /* ignore */
-      }
+      await w.unmaximize();
       await waitForOsMaximized(w, false, waitMs);
     }
     if (restoreBounds) {
-      const prev = restoreBounds;
+      await applyLogicalBounds(w, restoreBounds);
       restoreBounds = null;
-      try {
-        await applyLogicalBounds(w, prev);
-      } catch {
-        /* ignore */
-      }
     }
-    return w.isMaximized().catch(() => false);
+    fakeMaximized = false;
+    return w.isMaximized();
   }
 
   const before = await readLogicalBounds(w);
   try {
     await w.maximize();
-  } catch {
-    /* some compositors reject maximize() */
+  } catch (error) {
+    console.warn("[windowChrome] maximize failed; trying Linux fallback", error);
   }
   const nowOs = await waitForOsMaximized(w, true, waitMs);
   if (nowOs) {
@@ -234,7 +223,7 @@ export async function toggleMaximizeReliable(): Promise<boolean> {
   if (before) restoreBounds = before;
   const filled = await fillMonitorWorkArea(w);
   fakeMaximized = filled;
-  return filled || (await w.isMaximized().catch(() => false));
+  return filled || (await w.isMaximized());
 }
 
 export async function toggleMaximizeFromTitlebar(): Promise<void> {
@@ -243,7 +232,7 @@ export async function toggleMaximizeFromTitlebar(): Promise<void> {
   lastTitlebarMaximizeMs = now;
   try {
     await toggleMaximizeReliable();
-  } catch {
-    /* browser / no window API */
+  } catch (error) {
+    console.warn("[windowChrome] titlebar toggle failed", error);
   }
 }

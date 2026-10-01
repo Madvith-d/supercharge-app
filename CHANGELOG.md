@@ -26,6 +26,7 @@ See `docs/llm-wiki/release.md`.
 - Window size and position are saved in the background.
 
 ### Fixed
+- Windows minimize and maximize controls handle rapid clicks more reliably. Window-size updates no longer interrupt minimize or maximize transitions.
 - Remote projects no longer grant access to matching local folders.
 
 ## [0.2.45] - 2026-10-01

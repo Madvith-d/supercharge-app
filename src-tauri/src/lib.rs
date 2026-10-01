@@ -561,11 +561,12 @@ pub fn run() {
                 WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. }
                     if window.label() == "main" =>
                 {
-                    window_min::apply_main(window.app_handle());
+                    window_min::schedule_main(window.app_handle());
                     schedule_persist_main_window_state(window.app_handle());
                 }
                 WindowEvent::Resized(_)
                     if window.label() == "main" => {
+                        window_min::schedule_main(window.app_handle());
                         schedule_persist_main_window_state(window.app_handle());
                     }
                 WindowEvent::Focused(focused) if window.label() == "main" => {
@@ -768,7 +769,12 @@ pub fn run() {
                     }
                 }
             }
-            window_min::apply_main(window.app_handle());
+            window_min::remember_configured_min(
+                min_w,
+                min_h,
+                window.scale_factor().unwrap_or(scale),
+            );
+            window_min::schedule_main(window.app_handle());
 
             #[cfg(target_os = "macos")]
             {

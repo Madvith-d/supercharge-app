@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CAPTION_BUTTON_TOGGLE_DEFER_MS,
+  isFakeMaximized,
+  resetWindowChromeTestState,
+  toggleMaximizeReliable,
   maximizeLooksNoop,
   osMaximizeWaitMs,
   scheduleCaptionButtonToggle,
@@ -11,6 +14,127 @@ import {
   tauriDragRegion,
   TITLEBAR_MAXIMIZE_DEBOUNCE_MS,
 } from "./windowChrome";
+
+const host = vi.hoisted(() => ({
+  platform: "win",
+  isMaximized: vi.fn(),
+  toggleMaximize: vi.fn(),
+  maximize: vi.fn(),
+  unmaximize: vi.fn(),
+  outerPosition: vi.fn(),
+  outerSize: vi.fn(),
+  scaleFactor: vi.fn(),
+  setPosition: vi.fn(),
+  setSize: vi.fn(),
+  currentMonitor: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => host,
+  currentMonitor: host.currentMonitor,
+}));
+vi.mock("@/lib/appPlatform", () => ({ detectAppPlatform: () => host.platform }));
+
+describe("toggleMaximizeReliable", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.resetAllMocks();
+    resetWindowChromeTestState();
+    host.platform = "win";
+    host.isMaximized.mockResolvedValue(false);
+    host.toggleMaximize.mockResolvedValue(undefined);
+    host.maximize.mockResolvedValue(undefined);
+    host.unmaximize.mockResolvedValue(undefined);
+    host.outerPosition.mockResolvedValue({ x: 100, y: 80 });
+    host.outerSize.mockResolvedValue({ width: 1600, height: 1200 });
+    host.scaleFactor.mockResolvedValue(2);
+    host.setPosition.mockResolvedValue(undefined);
+    host.setSize.mockResolvedValue(undefined);
+    host.currentMonitor.mockResolvedValue({
+      scaleFactor: 2,
+      workArea: { position: { x: 0, y: 40 }, size: { width: 3840, height: 2080 } },
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("delegates Windows toggling to the native command without a frontend state query", async () => {
+    await toggleMaximizeReliable();
+    expect(host.toggleMaximize).toHaveBeenCalledTimes(1);
+    expect(host.isMaximized).not.toHaveBeenCalled();
+    expect(host.maximize).not.toHaveBeenCalled();
+    expect(host.unmaximize).not.toHaveBeenCalled();
+    expect(host.setSize).not.toHaveBeenCalled();
+    expect(host.setPosition).not.toHaveBeenCalled();
+  });
+
+  it("propagates a rejected Windows toggle instead of returning an intended state", async () => {
+    const error = new Error("toggle denied");
+    host.toggleMaximize.mockRejectedValueOnce(error);
+    await expect(toggleMaximizeReliable()).rejects.toBe(error);
+    expect(host.isMaximized).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("preserves macOS maximize/restore without work-area fill (%s)", async (was) => {
+    host.platform = "mac";
+    host.isMaximized.mockResolvedValue(was);
+    await expect(toggleMaximizeReliable()).resolves.toBe(!was);
+    expect(was ? host.unmaximize : host.maximize).toHaveBeenCalledTimes(1);
+    expect(host.toggleMaximize).not.toHaveBeenCalled();
+    expect(host.setSize).not.toHaveBeenCalled();
+  });
+
+  it("preserves the Linux work-area fallback and logical restore bounds", async () => {
+    host.platform = "linux";
+    const toggle = toggleMaximizeReliable();
+    await vi.dynamicImportSettled();
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(toggle).resolves.toBe(true);
+    expect(isFakeMaximized()).toBe(true);
+    expect(host.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 0, y: 20 }));
+    expect(host.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 1920, height: 1040 }));
+    await expect(toggleMaximizeReliable()).resolves.toBe(false);
+    expect(isFakeMaximized()).toBe(false);
+    expect(host.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 50, y: 40 }));
+    expect(host.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 800, height: 600 }));
+    expect(host.toggleMaximize).not.toHaveBeenCalled();
+  });
+
+  it("retains fake-maximize state and restore bounds when Linux restore rejects", async () => {
+    host.platform = "linux";
+    const toggle = toggleMaximizeReliable();
+    await vi.dynamicImportSettled();
+    await vi.advanceTimersByTimeAsync(100);
+    await toggle;
+    const error = new Error("resize denied");
+    host.setSize.mockRejectedValueOnce(error);
+    await expect(toggleMaximizeReliable()).rejects.toBe(error);
+    expect(isFakeMaximized()).toBe(true);
+    await expect(toggleMaximizeReliable()).resolves.toBe(false);
+    expect(host.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 800, height: 600 }));
+  });
+
+  it("still fills the Linux work area when native maximize rejects", async () => {
+    host.platform = "linux";
+    const error = new Error("unsupported");
+    host.maximize.mockRejectedValueOnce(error);
+    const toggle = toggleMaximizeReliable();
+    await vi.dynamicImportSettled();
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(toggle).resolves.toBe(true);
+    expect(console.warn).toHaveBeenCalledWith("[windowChrome] maximize failed; trying Linux fallback", error);
+  });
+
+  it("uses Linux native maximize when it works", async () => {
+    host.platform = "linux";
+    host.isMaximized.mockResolvedValueOnce(false).mockResolvedValue(true);
+    await expect(toggleMaximizeReliable()).resolves.toBe(true);
+    expect(isFakeMaximized()).toBe(false);
+    expect(host.setSize).not.toHaveBeenCalled();
+  });
+});
 
 describe("shouldAcceptTitlebarMaximize", () => {
   it("debounces the second click of a drag-region pair", () => {

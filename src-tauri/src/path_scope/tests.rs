@@ -170,7 +170,10 @@ fn ssh_metadata_cannot_grant_an_existing_local_root() {
     let secret = remote_path.join("secret");
     fs::write(&secret, "private").unwrap();
     with_isolated_roots(&tmp.join("local"), &tmp.join("app"), false, || {
-        let mut rows = vec![project("host:remote", &remote_path)];
+        let mut rows = Vec::new();
+        // Legacy SSH names require POSIX paths, not native Windows drive paths.
+        #[cfg(not(windows))]
+        rows.push(project("host:remote", &remote_path));
         for alias in ["host", "-invalid", "bad alias", " "] {
             let mut row = project("remote", &remote_path);
             row.ssh_alias = Some(alias.into());

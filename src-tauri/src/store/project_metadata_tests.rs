@@ -3,25 +3,29 @@ use std::ffi::OsString;
 
 struct MetadataHome {
     path: PathBuf,
-    previous: Option<OsString>,
 }
 
 impl MetadataHome {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("project-metadata-{}", Uuid::new_v4()));
-        let previous = std::env::var_os("SUPERCHARGE_APP_HOME");
-        std::env::set_var("SUPERCHARGE_APP_HOME", &path);
-        Self { path, previous }
+        Self { path }
     }
 }
 
 impl Drop for MetadataHome {
     fn drop(&mut self) {
-        match &self.previous {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+struct RestoreHome(Option<OsString>);
+
+impl Drop for RestoreHome {
+    fn drop(&mut self) {
+        match self.0.take() {
             Some(value) => std::env::set_var("SUPERCHARGE_APP_HOME", value),
             None => std::env::remove_var("SUPERCHARGE_APP_HOME"),
         }
-        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -49,28 +53,25 @@ fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>, std::time::SystemTime)> {
 
 #[test]
 fn metadata_missing_home_does_not_initialize() {
-    let _home_lock = crate::paths::APP_HOME_ENV_LOCK.lock().unwrap();
     let home = MetadataHome::new();
-    assert!(load_projects_metadata().is_empty());
+    assert!(load_projects_metadata_from_path(&home.path.join("projects.json")).is_empty());
     assert!(!home.path.exists());
 }
 
 #[test]
 fn metadata_corrupt_store_is_not_quarantined() {
-    let _home_lock = crate::paths::APP_HOME_ENV_LOCK.lock().unwrap();
     let home = MetadataHome::new();
     fs::create_dir_all(&home.path).unwrap();
     for bytes in ["{broken", "", "[{}]"] {
-        fs::write(projects_file(), bytes).unwrap();
+        fs::write(home.path.join("projects.json"), bytes).unwrap();
         let before = snapshot(&home.path);
-        assert!(load_projects_metadata().is_empty());
+        assert!(load_projects_metadata_from_path(&home.path.join("projects.json")).is_empty());
         assert_eq!(snapshot(&home.path), before);
     }
 }
 
 #[test]
 fn metadata_preserves_health_alias_duplicates_and_session_bindings() {
-    let _home_lock = crate::paths::APP_HOME_ENV_LOCK.lock().unwrap();
     let home = MetadataHome::new();
     fs::create_dir_all(&home.path).unwrap();
     let mut local = project("local", &home.path);
@@ -85,19 +86,19 @@ fn metadata_preserves_health_alias_duplicates_and_session_bindings() {
     let mut system = project("old-system", &home.path);
     system.system = true;
     fs::write(
-        projects_file(),
+        home.path.join("projects.json"),
         serde_json::to_vec(&vec![local, legacy, remote, general, system]).unwrap(),
     )
     .unwrap();
     fs::write(
-        sessions_index_file(),
+        home.path.join("sessions_index.json"),
         br#"[{"id":"bound","projectId":"system:general"},{"id":"ssh","projectId":"legacy-ssh"}]"#,
     )
     .unwrap();
-    fs::write(settings_file(), b"{}").unwrap();
+    fs::write(home.path.join("settings.json"), b"{}").unwrap();
     let before = snapshot(&home.path);
 
-    let rows = load_projects_metadata();
+    let rows = load_projects_metadata_from_path(&home.path.join("projects.json"));
     assert_eq!(
         rows.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
         ["explicit-ssh", "local", "legacy-ssh"]
@@ -113,12 +114,14 @@ fn validated_load_still_checks_local_health() {
     let _scope_lock = crate::path_scope::TEST_LOCK.blocking_lock();
     let _home_lock = crate::paths::APP_HOME_ENV_LOCK.lock().unwrap();
     let home = MetadataHome::new();
+    let _restore = RestoreHome(std::env::var_os("SUPERCHARGE_APP_HOME"));
+    std::env::set_var("SUPERCHARGE_APP_HOME", &home.path);
     fs::create_dir_all(&home.path).unwrap();
     let present = project("present", &home.path);
     let mut absent = project("absent", &home.path.join("missing"));
     absent.path_ok = true;
     fs::write(
-        projects_file(),
+        home.path.join("projects.json"),
         serde_json::to_vec(&vec![present, absent]).unwrap(),
     )
     .unwrap();

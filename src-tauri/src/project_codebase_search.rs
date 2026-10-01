@@ -851,6 +851,7 @@ mod tests {
 
     #[test]
     fn soft_fail_empty_query() {
+        let _scope_lock = crate::path_scope::TEST_LOCK.blocking_lock();
         let dir = make_tmp("emptyq");
         let r = search_project_codebase(dir.to_str().unwrap(), "   ", Some("all"), Some(10));
         assert_eq!(r.soft_fail.as_deref(), Some("empty_query"));
@@ -861,6 +862,7 @@ mod tests {
 
     #[test]
     fn empty_name_query_lists_files() {
+        let _scope_lock = crate::path_scope::TEST_LOCK.blocking_lock();
         let dir = make_tmp("list");
         fs::write(dir.join("alpha.txt"), "a").unwrap();
         fs::write(dir.join("beta.txt"), "b").unwrap();
@@ -877,6 +879,7 @@ mod tests {
 
     #[test]
     fn finds_name_and_content() {
+        let _scope_lock = crate::path_scope::TEST_LOCK.blocking_lock();
         let dir = make_tmp("find");
         let src = dir.join("src");
         fs::create_dir_all(&src).unwrap();
@@ -924,6 +927,7 @@ mod tests {
 
     #[test]
     fn soft_fail_not_a_dir() {
+        let _scope_lock = crate::path_scope::TEST_LOCK.blocking_lock();
         let dir = make_tmp("notdir");
         let file = dir.join("file.txt");
         fs::write(&file, "x").unwrap();

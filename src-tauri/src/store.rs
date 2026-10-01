@@ -1023,7 +1023,7 @@ pub struct ChatMessageStored {
     pub marker: Option<String>,
 }
 
-fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &PathBuf) -> T {
+fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
     match fs::read_to_string(path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => T::default(),
@@ -1458,7 +1458,11 @@ pub fn reorder_projects_by_ids(list: &[Project], ordered_ids: &[String]) -> Vec<
 /// Read sidebar metadata without initialization, path probes, repair, or writes.
 /// Invalid JSON stays untouched for the validated reader to recover later.
 pub fn load_projects_metadata() -> Vec<Project> {
-    let mut list: Vec<Project> = read_json(&projects_file());
+    load_projects_metadata_from_path(&projects_file())
+}
+
+fn load_projects_metadata_from_path(path: &Path) -> Vec<Project> {
+    let mut list: Vec<Project> = read_json(path);
     list.retain(|p| !p.is_legacy_general());
     apply_project_pin_partition(&mut list);
     list
