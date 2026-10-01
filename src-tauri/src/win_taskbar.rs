@@ -273,7 +273,7 @@ fn overlay_icon(count: u32) -> Result<Option<OwnedIcon>> {
     };
     let size = crate::win_taskbar_overlay::SIZE as i32;
     // A top-down 32-bit DIB uses premultiplied BGRA, not the renderer's straight RGBA.
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         for channel in 0..3 {
             pixel[channel] = ((u16::from(pixel[channel]) * u16::from(pixel[3]) + 127) / 255) as u8;

@@ -84,28 +84,36 @@ impl Mailbox {
         (generation != 0 && generation == state >> GENERATION_SHIFT).then_some(request)
     }
 
+    fn update_state(&self, index: usize, update: impl Fn(u64) -> u64) {
+        let state = &self.slots[index].state;
+        let mut current = state.load(Ordering::Acquire);
+        loop {
+            match state.compare_exchange_weak(
+                current,
+                update(current),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
     pub fn set_tab(&self, index: usize, present: bool, overlay_count: Option<u32>) {
-        self.slots[index]
-            .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
-                Some(
-                    (state & !((u32::MAX as u64) | PRESENT | OVERLAY))
-                        | DIRTY
-                        | REFRESH
-                        | if present { PRESENT } else { 0 }
-                        | overlay_count.map_or(0, |count| OVERLAY | u64::from(count)),
-                )
-            })
-            .ok();
+        self.update_state(index, |state| {
+            (state & !((u32::MAX as u64) | PRESENT | OVERLAY))
+                | DIRTY
+                | REFRESH
+                | if present { PRESENT } else { 0 }
+                | overlay_count.map_or(0, |count| OVERLAY | u64::from(count))
+        });
     }
 
     pub fn set_overlay(&self, index: usize, count: u32) {
-        self.slots[index]
-            .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
-                Some((state & !(u32::MAX as u64)) | DIRTY | OVERLAY | u64::from(count))
-            })
-            .ok();
+        self.update_state(index, |state| {
+            (state & !(u32::MAX as u64)) | DIRTY | OVERLAY | u64::from(count)
+        });
     }
 
     pub fn take(&self, index: usize) -> Option<Request> {

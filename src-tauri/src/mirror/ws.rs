@@ -73,11 +73,18 @@ impl WsHub {
     }
 
     fn client_left(&self) {
-        let _ = self
-            .clients
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
-                Some(c.saturating_sub(1))
-            });
+        let mut count = self.clients.load(Ordering::Relaxed);
+        loop {
+            match self.clients.compare_exchange_weak(
+                count,
+                count.saturating_sub(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => count = actual,
+            }
+        }
     }
 }
 
@@ -244,4 +251,38 @@ async fn handle_text_frame(
         }),
     };
     Some(res.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WsHub;
+
+    #[test]
+    fn leaving_an_empty_hub_keeps_count_at_zero() {
+        let hub = WsHub::new();
+        hub.client_left();
+        assert_eq!(hub.client_count(), 0);
+        assert_eq!(hub.client_joined(), 1);
+        hub.client_left();
+        assert_eq!(hub.client_count(), 0);
+    }
+
+    #[test]
+    fn concurrent_disconnects_preserve_remaining_clients() {
+        let hub = WsHub::new();
+        for _ in 0..801 {
+            hub.client_joined();
+        }
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let hub = &hub;
+                scope.spawn(move || {
+                    for _ in 0..100 {
+                        hub.client_left();
+                    }
+                });
+            }
+        });
+        assert_eq!(hub.client_count(), 1);
+    }
 }
