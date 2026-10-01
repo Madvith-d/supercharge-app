@@ -1,0 +1,2 @@
+src-tauri/resources/plugin-bridge-*.mjs -text
+src-tauri/resources/plugin-bridge-*.mjs.sha256 -text

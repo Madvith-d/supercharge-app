@@ -15,18 +15,15 @@ import {
   type InlineMcpConfigDraft,
   type InlineMcpDraft,
 } from "@/lib/pluginApiInline";
-import { GlassModal } from "@/components/GlassModal";
+import { PluginApiRemoveDialog } from "@/components/PluginApiRemoveDialog";
 import {
-  IconKey,
   IconPlug,
-  IconPlus,
-  IconRefresh,
   IconShieldCheck,
   IconTrash,
-  IconUser,
 } from "@/components/icons";
 import { UiCheck, UiSwitch } from "@/components/settings/shared";
-import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { PluginApiDefinitionEditor } from "@/components/PluginApiDefinitionEditor";
+import { PluginApiConnectionSection } from "@/components/PluginApiConnectionSection";
 import { Select } from "@/components/Select";
 
 type BusyStep =
@@ -540,122 +537,23 @@ export function PluginApiPanel({
         </div>
       ) : null}
 
-      <section className="ext-ref-block plugin-api-account">
-        <div className="ext-ref-block__head">
-          <IconUser size={16} />
-          <h2 className="ext-ref-block__title">{tr("pluginApi.account.title")}</h2>
-          <span
-            className={`ext-badge ext-badge--${accountReady ? "ok" : "muted"}`}
-          >
-            {accountReady ? tr("account.signedIn") : tr("account.signedOut")}
-          </span>
-        </div>
-        <p className="ext-ref-block__lead">{tr("pluginApi.account.separate")}</p>
-        {account?.profile.email ? (
-          <p className="plugin-api-meta">{account.profile.email}</p>
-        ) : null}
-        {onOpenAccount ? (
-          <div className="settings-row__actions">
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={onOpenAccount}
-            >
-              {tr("managedSetup.openAccount")}
-            </button>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="ext-ref-block">
-        <div className="ext-ref-block__head">
-          <IconKey size={16} />
-          <h2 className="ext-ref-block__title">
-            {tr("pluginApi.connection.title")}
-          </h2>
-          <span
-            className={`ext-badge ext-badge--${connection?.connected ? "ok" : "muted"}`}
-          >
-            {connection?.connected
-              ? tr("pluginApi.connection.connected")
-              : tr("pluginApi.connection.disconnected")}
-          </span>
-        </div>
-        {connection?.connected ? (
-          <div className="plugin-api-connection">
-            <code className="plugin-api-endpoint">{connection.endpoint}</code>
-            <p className="plugin-api-meta">
-              {tr("pluginApi.connection.scopes", { value: scopes })}
-            </p>
-            <p className="plugin-api-meta">
-              {tr("pluginApi.connection.workspaces", { value: workspaces })}
-            </p>
-            <div className="settings-row__actions">
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                disabled={!!busy}
-                onClick={() => void refresh()}
-              >
-                <IconRefresh size={14} />
-                {tr("ext.refresh")}
-              </button>
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                disabled={!!busy}
-                onClick={() => void disconnect()}
-              >
-                {tr("pluginApi.connection.disconnect")}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <form className="plugin-api-form" onSubmit={(event) => void connect(event)}>
-            <label className="field">
-              <span>{tr("pluginApi.connection.endpoint")}</span>
-              <input
-                className="settings-input"
-                value={endpoint}
-                onChange={(event) => setEndpoint(event.target.value)}
-                placeholder={tr("pluginApi.connection.endpointPlaceholder")}
-                autoComplete="url"
-                spellCheck={false}
-                disabled={!!busy}
-              />
-            </label>
-            <label className="field">
-              <span>{tr("pluginApi.connection.apiKey")}</span>
-              <input
-                ref={apiKeyRef}
-                className="settings-input"
-                type="password"
-                aria-label={tr("pluginApi.connection.apiKey")}
-                placeholder={tr("pluginApi.connection.apiKeyPlaceholder")}
-                autoComplete="off"
-                spellCheck={false}
-                minLength={32}
-                maxLength={256}
-                disabled={!!busy}
-              />
-              <span className="ext-field-hint">
-                {tr("pluginApi.connection.apiKeyHint")}
-              </span>
-            </label>
-            <div className="settings-row__actions">
-              <button
-                type="submit"
-                className="btn btn--solid btn--sm"
-                disabled={!!busy}
-              >
-                {busy === "connect"
-                  ? tr("pluginApi.connection.connecting")
-                  : tr("pluginApi.connection.connect")}
-              </button>
-            </div>
-          </form>
-        )}
-      </section>
+      <PluginApiConnectionSection
+        locale={locale}
+        account={account}
+        accountReady={accountReady}
+        onOpenAccount={onOpenAccount}
+        connection={connection}
+        scopes={scopes}
+        workspaces={workspaces}
+        busy={!!busy}
+        connecting={busy === "connect"}
+        endpoint={endpoint}
+        setEndpoint={setEndpoint}
+        apiKeyRef={apiKeyRef}
+        connect={connect}
+        disconnect={disconnect}
+        refresh={() => refresh()}
+      />
 
       {connection?.connected ? (
         <>
@@ -1045,269 +943,22 @@ export function PluginApiPanel({
             </section>
           ) : null}
 
-          <section className="ext-ref-block">
-            <div className="ext-ref-block__head">
-              <IconPlus size={16} />
-              <h2 className="ext-ref-block__title">
-                {tr("pluginApi.editor.title")}
-              </h2>
-            </div>
-            <div className="plugin-api-import">
-              <label className="field">
-                <span>{tr("pluginApi.editor.importLabel")}</span>
-                <textarea
-                  ref={importRef}
-                  className="settings-input plugin-api-textarea"
-                  rows={4}
-                  autoComplete="off"
-                  spellCheck={false}
-                  disabled={!!busy}
-                />
-                <span className="ext-field-hint">
-                  {tr("pluginApi.editor.importHint")}
-                </span>
-              </label>
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                disabled={!!busy}
-                onClick={importDefinition}
-              >
-                {tr("pluginApi.editor.import")}
-              </button>
-            </div>
-            <div className="plugin-api-grid">
-              <label className="field">
-                <span>{tr("pluginApi.editor.pluginId")}</span>
-                <input
-                  className="settings-input"
-                  value={draft.id}
-                  onChange={(event) =>
-                    updateDraft((current) => ({ ...current, id: event.target.value }))
-                  }
-                  placeholder={tr("pluginApi.editor.pluginIdPlaceholder")}
-                  spellCheck={false}
-                />
-              </label>
-              <label className="field">
-                <span>{tr("ext.mcp.name")}</span>
-                <input
-                  className="settings-input"
-                  value={draft.name}
-                  onChange={(event) =>
-                    updateDraft((current) => ({ ...current, name: event.target.value }))
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>{tr("pluginApi.editor.version")}</span>
-                <input
-                  className="settings-input"
-                  value={draft.version}
-                  onChange={(event) =>
-                    updateDraft((current) => ({ ...current, version: event.target.value }))
-                  }
-                  spellCheck={false}
-                />
-              </label>
-              <label className="field">
-                <span>{tr("pluginApi.editor.serverId")}</span>
-                <input
-                  className="settings-input"
-                  value={draft.serverId}
-                  onChange={(event) =>
-                    updateDraft((current) => ({ ...current, serverId: event.target.value }))
-                  }
-                  spellCheck={false}
-                />
-              </label>
-            </div>
-            <label className="field">
-              <span>{tr("pluginApi.editor.description")}</span>
-              <input
-                className="settings-input"
-                value={draft.description}
-                onChange={(event) =>
-                  updateDraft((current) => ({ ...current, description: event.target.value }))
-                }
-              />
-            </label>
-            <div className="field">
-              <span>{tr("pluginApi.editor.transport")}</span>
-              <SegmentedControl
-                value={draft.transport}
-                ariaLabel={tr("pluginApi.editor.transport")}
-                options={[
-                  { value: "stdio", label: tr("pluginApi.editor.stdio") },
-                  { value: "http", label: tr("pluginApi.editor.http") },
-                ]}
-                onChange={(transport) =>
-                  updateDraft((current) => ({
-                    ...current,
-                    transport,
-                    config: [],
-                  }))
-                }
-              />
-            </div>
-            {draft.transport === "stdio" ? (
-              <>
-                <label className="field">
-                  <span>{tr("ext.mcp.command")}</span>
-                  <input
-                    className="settings-input"
-                    value={draft.command}
-                    onChange={(event) =>
-                      updateDraft((current) => ({
-                        ...current,
-                        command: event.target.value,
-                      }))
-                    }
-                    spellCheck={false}
-                  />
-                </label>
-                <label className="field">
-                  <span>{tr("ext.mcp.args")}</span>
-                  <textarea
-                    className="settings-input plugin-api-textarea"
-                    rows={3}
-                    value={draft.argsText}
-                    onChange={(event) =>
-                      updateDraft((current) => ({
-                        ...current,
-                        argsText: event.target.value,
-                      }))
-                    }
-                    placeholder={'["--flag", "value"]'}
-                    spellCheck={false}
-                  />
-                  <span className="ext-field-hint">
-                    {tr("pluginApi.editor.argsHint")}
-                  </span>
-                </label>
-              </>
-            ) : (
-              <label className="field">
-                <span>{tr("pluginApi.editor.url")}</span>
-                <input
-                  className="settings-input"
-                  type="url"
-                  value={draft.url}
-                  onChange={(event) =>
-                    updateDraft((current) => ({ ...current, url: event.target.value }))
-                  }
-                  placeholder="https://mcp.example.com/rpc"
-                  spellCheck={false}
-                />
-              </label>
-            )}
-
-            <div className="plugin-api-secrets">
-              <div className="ext-ref-block__head">
-                <div>
-                  <div className="ext-ref-section-label">
-                    {tr("pluginApi.secrets.title")}
-                  </div>
-                  <p className="ext-ref-block__lead">
-                    {tr("pluginApi.secrets.hint")}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  onClick={addConfig}
-                >
-                  <IconPlus size={13} />
-                  {tr("pluginApi.secrets.add")}
-                </button>
-              </div>
-              {draft.config.map((field, index) => (
-                <div className="plugin-api-secret-row" key={`${index}:${field.key}`}>
-                  <input
-                    className="settings-input"
-                    aria-label={tr("pluginApi.secrets.key")}
-                    value={field.key}
-                    onChange={(event) =>
-                      setConfig(index, { ...field, key: event.target.value })
-                    }
-                    placeholder="token"
-                    spellCheck={false}
-                  />
-                  <input
-                    className="settings-input"
-                    aria-label={tr("pluginApi.secrets.target")}
-                    value={field.targetName}
-                    onChange={(event) =>
-                      setConfig(index, { ...field, targetName: event.target.value })
-                    }
-                    placeholder={
-                      draft.transport === "stdio" ? "API_TOKEN" : "Authorization"
-                    }
-                    spellCheck={false}
-                  />
-                  <UiCheck
-                    checked={field.required}
-                    onChange={(required) => setConfig(index, { ...field, required })}
-                    label={tr("pluginApi.secrets.required")}
-                  />
-                  <button
-                    type="button"
-                    className="ext-ref-gear"
-                    aria-label={tr("ext.mcp.remove")}
-                    onClick={() =>
-                      updateDraft((current) => ({
-                        ...current,
-                        config: current.config.filter((_, item) => item !== index),
-                      }))
-                    }
-                  >
-                    <IconTrash size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="settings-row__actions">
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                disabled={!!busy}
-                onClick={() => void validate()}
-              >
-                {busy === "validate"
-                  ? tr("pluginApi.validating")
-                  : tr("pluginApi.validate")}
-              </button>
-            </div>
-            {validated ? (
-              <div className="plugin-api-review">
-                <div className="ext-ref-section-label">
-                  {tr("pluginApi.review.title")}
-                </div>
-                <pre className="ext-details-pre">
-                  {JSON.stringify(validated, null, 2)}
-                </pre>
-                <UiCheck
-                  checked={reviewApproved}
-                  disabled={!!busy}
-                  onChange={setReviewApproved}
-                  label={tr("pluginApi.review.approve")}
-                />
-                <div className="settings-row__actions">
-                  <button
-                    type="button"
-                    className="btn btn--solid btn--sm"
-                    disabled={!!busy || !reviewApproved}
-                    onClick={() => void install()}
-                  >
-                    {busy === "install"
-                      ? tr("pluginApi.installing")
-                      : tr("pluginApi.install")}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </section>
+          <PluginApiDefinitionEditor
+            locale={locale}
+            draft={draft}
+            busy={!!busy}
+            busyStep={busy}
+            validated={validated}
+            reviewApproved={reviewApproved}
+            importRef={importRef}
+            importDefinition={importDefinition}
+            updateDraft={updateDraft}
+            addConfig={addConfig}
+            setConfig={setConfig}
+            validate={validate}
+            install={install}
+            setReviewApproved={setReviewApproved}
+          />
         </>
       ) : null}
 
@@ -1320,56 +971,15 @@ export function PluginApiPanel({
         </p>
       ) : null}
 
-      <GlassModal
-        open={!!removeTarget}
-        onClose={() => {
-          if (!busy) setRemoveTarget(null);
-        }}
-        title={tr("pluginApi.removeTitle")}
-        size="sm"
-        closeLabel={tr("common.close")}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              disabled={!!busy}
-              onClick={() => setRemoveTarget(null)}
-            >
-              {tr("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="btn btn--danger"
-              disabled={!!busy || !removeTarget}
-              onClick={() => {
-                if (!removeTarget) return;
-                void applyAction(
-                  "remove",
-                  removeTarget,
-                  {
-                    action: "uninstall",
-                    expectedRevision: removeTarget.revision,
-                  },
-                  tr("ext.plugins.uninstall"),
-                ).then((removed) => {
-                  if (removed) setRemoveTarget(null);
-                });
-              }}
-            >
-              {busy === "remove"
-                ? tr("pluginApi.removing")
-                : tr("ext.plugins.uninstall")}
-            </button>
-          </>
-        }
-      >
-        <p className="app-dialog__msg">
-          {tr("pluginApi.removeConfirm", {
-            name: removeTarget?.manifest.name ?? "",
-          })}
-        </p>
-      </GlassModal>
+      <PluginApiRemoveDialog
+        locale={locale}
+        removeTarget={removeTarget}
+        busy={busy}
+        setRemoveTarget={setRemoveTarget}
+        remove={(plugin) => applyAction("remove", plugin, {
+          action: "uninstall", expectedRevision: plugin.revision,
+        }, tr("ext.plugins.uninstall"))}
+      />
     </div>
   );
 }
