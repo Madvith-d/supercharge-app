@@ -25,6 +25,7 @@ mod events;
 mod events_bg;
 mod fork_trim;
 mod journal;
+mod managed_plugin_bridge;
 mod post_turn_reconcile;
 mod process;
 mod stream;
@@ -109,6 +110,9 @@ pub struct SessionManager {
     /// effort change, proxy, …). Flushed when the turn becomes idle so
     /// the next process picks up spawn flags (P0-5 / #598).
     pub(super) pending_soft_respawn: Mutex<HashMap<String, String>>,
+    /// Session-scoped managed Plugin API bridge updates deferred until a busy
+    /// turn settles. Separate from process-level soft-respawn requests.
+    pub(super) pending_managed_plugin_apply: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Default for SessionManager {
@@ -133,12 +137,15 @@ impl SessionManager {
             connect_lock_busy_ticks: AtomicU32::new(0),
             post_turn_journal_locks: Mutex::new(HashMap::new()),
             pending_soft_respawn: Mutex::new(HashMap::new()),
+            pending_managed_plugin_apply: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
     /// Drop bookkeeping for a chat that no longer exists in the store.
     pub fn forget_deleted_session(&self, session_id: &str) {
         self.pending_soft_respawn.lock().remove(session_id);
+        self.pending_managed_plugin_apply.lock().remove(session_id);
+        crate::managed_plugin_bridge::forget_session(session_id);
         let kids: Vec<PendingAcpChild> = {
             let mut list = self.pending_children.lock();
             let mut taken = Vec::new();

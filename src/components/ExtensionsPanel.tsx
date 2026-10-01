@@ -10,6 +10,7 @@ import { createT, intlLocale, type Locale, type MessageKey } from "@/i18n";
 import { ExtensionsPanelSkillModals } from "@/components/ExtensionsPanelSkillModals";
 import { ExtensionsPanelPluginsModals } from "@/components/ExtensionsPanelPluginsModals";
 import { ExtensionsPanelMcpModals } from "@/components/ExtensionsPanelMcpModals";
+import { PluginApiPanel } from "@/components/PluginApiPanel";
 import {
   IconDoctor,
   IconEdit,
@@ -164,6 +165,7 @@ export type ExtensionsTabId =
   | "plugins"
   | "skills"
   | "mcp"
+  | "managed-mcp"
   | "agents"
   | "hooks"
   | "rules"
@@ -182,6 +184,11 @@ export interface ExtensionsPanelProps {
   onTabChange?: (tab: ExtensionsTabId) => void;
   /** Navigate to Settings → Runtime when CLI is missing. */
   onOpenRuntime?: () => void;
+  /** Selected application and exact agent session identities. */
+  appSessionId?: string | null;
+  agentSessionId?: string | null;
+  /** Navigate to the existing account/login settings. */
+  onOpenAccount?: () => void;
   /** Fired after skill enable prefs change so slash palette can refresh. */
   onSkillsPrefsChanged?: () => void;
 }
@@ -193,6 +200,9 @@ export function ExtensionsPanel({
   activeTab = "plugins",
   onTabChange,
   onOpenRuntime,
+  appSessionId,
+  agentSessionId,
+  onOpenAccount,
   onSkillsPrefsChanged,
 }: ExtensionsPanelProps) {
   const tr = useMemo(() => createT(locale), [locale]);
@@ -1793,6 +1803,7 @@ export function ExtensionsPanel({
               [
                 ["plugins", "ext.plugins.title", plugins.length] as const,
                 ["mcp", "ext.mcp.title", mcpCount] as const,
+                ["managed-mcp", "pluginApi.title", null] as const,
                 ["skills", "ext.skills.title", skills.length] as const,
                 ["rules", "ext.rules.title", null] as const,
                 ["commands", "ext.commands.title", null] as const,
@@ -1884,13 +1895,13 @@ export function ExtensionsPanel({
         </div>
       ) : null}
 
-      {pathHint && (
+      {tab !== "managed-mcp" && pathHint && (
         <p className="ext-alert ext-alert--warn" role="status">
           {pathHint}
         </p>
       )}
 
-      {actionError && (
+      {tab !== "managed-mcp" && actionError && (
         <div className="ext-alert ext-alert--error" role="alert">
           <div className="ext-alert__title">
             {actionErrorSource === "mcp"
@@ -1911,7 +1922,7 @@ export function ExtensionsPanel({
         </div>
       )}
 
-      {bannerError && (
+      {tab !== "managed-mcp" && bannerError && (
         <div
           className={
             "ext-alert" + (cliMissing ? " ext-alert--error" : " ext-alert--warn")
@@ -2873,6 +2884,15 @@ export function ExtensionsPanel({
         ) : null}
       </div>
       </>
+      )}
+
+      {tab === "managed-mcp" && (
+        <PluginApiPanel
+          locale={locale}
+          appSessionId={appSessionId}
+          agentSessionId={agentSessionId}
+          onOpenAccount={onOpenAccount}
+        />
       )}
 
       {tab === "rules" && (

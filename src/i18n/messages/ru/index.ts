@@ -1,5 +1,6 @@
 /** Merged ru message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { ruCore } from "./core";
 import { ruSidebar } from "./sidebar";
 import { ruProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const ru: Record<MessageKey, string> = {
   ...ruCore,
   ...updateMessages["ru"],
+  ...pluginApiMessages.ru,
   ...ruSidebar,
   ...ruProject,
   ...ruSession,

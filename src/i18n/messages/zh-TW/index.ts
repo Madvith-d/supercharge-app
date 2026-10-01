@@ -1,5 +1,6 @@
 /** Merged zhTW message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { zhTWCore } from "./core";
 import { zhTWSidebar } from "./sidebar";
 import { zhTWProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const zhTW: Record<MessageKey, string> = {
   ...zhTWCore,
   ...updateMessages["zh-TW"],
+  ...pluginApiMessages["zh-TW"],
   ...zhTWSidebar,
   ...zhTWProject,
   ...zhTWSession,

@@ -1,5 +1,6 @@
 /** Merged es message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { esCore } from "./core";
 import { esSidebar } from "./sidebar";
 import { esProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const es: Record<MessageKey, string> = {
   ...esCore,
   ...updateMessages["es"],
+  ...pluginApiMessages.es,
   ...esSidebar,
   ...esProject,
   ...esSession,

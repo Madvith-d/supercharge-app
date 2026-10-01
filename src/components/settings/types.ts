@@ -293,6 +293,8 @@ export interface SettingsPageProps {
   onArchiveOlderThan?: (days: number) => void;
   archiveAgeSessions?: readonly ArchiveAgeSessionLike[];
   projectPath?: string | null;
+  activeAppSessionId?: string | null;
+  activeAgentSessionId?: string | null;
   onOpenProjectFileInResources?: (opts: {
     path: string;
     relativePath: string;

@@ -1,5 +1,6 @@
 /** Merged id message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { idCore } from "./core";
 import { idSidebar } from "./sidebar";
 import { idProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const id: Record<MessageKey, string> = {
   ...idCore,
   ...updateMessages["id"],
+  ...pluginApiMessages.id,
   ...idSidebar,
   ...idProject,
   ...idSession,

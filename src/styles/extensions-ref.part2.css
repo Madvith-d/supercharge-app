@@ -553,3 +553,119 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── Managed MCP / standalone Plugin API ── */
+.plugin-api-panel {
+  gap: 24px;
+}
+
+.plugin-api-panel .ext-ref-block + .ext-ref-block {
+  border-top: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.12));
+  padding-top: 20px;
+}
+
+.plugin-api-form,
+.plugin-api-import,
+.plugin-api-connection,
+.plugin-api-review,
+.plugin-api-secrets,
+.plugin-api-selected {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.plugin-api-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.plugin-api-panel .field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plugin-api-panel .settings-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.plugin-api-textarea {
+  min-height: 72px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  line-height: 1.45;
+}
+
+.plugin-api-endpoint,
+.plugin-api-permissions code {
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.14));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  padding: 6px 9px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.plugin-api-meta,
+.plugin-api-operation {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.plugin-api-secret-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.8fr) minmax(10rem, 1.2fr) auto 32px;
+  gap: 8px;
+  align-items: center;
+}
+
+.plugin-api-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plugin-api-not-ready {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d99b2b) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning, #d99b2b) 8%, transparent);
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.plugin-api-not-ready strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.plugin-api-row--selected {
+  box-shadow: inset 3px 0 0 var(--accent, #3b7cff);
+}
+
+@media (max-width: 720px) {
+  .plugin-api-grid,
+  .plugin-api-secret-row {
+    grid-template-columns: 1fr;
+  }
+
+  .plugin-api-secret-row .ext-ref-gear {
+    justify-self: end;
+  }
+}

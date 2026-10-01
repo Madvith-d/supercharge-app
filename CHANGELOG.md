@@ -22,6 +22,7 @@ See `docs/llm-wiki/release.md`.
 ### Added
 - CLI conversations appear automatically, even when a custom provider is selected. Opening history keeps terminal conversations intact, and continuing creates a separate App copy.
 - Startup logs now help identify slow initialization steps.
+- Reviewed plugin tools can be managed and applied to the selected local Linux chat. Installation requires explicit trust and enablement, and readiness requires a consented tool call.
 
 ### Changed
 - Settings reads and startup avoid repeated filesystem setup and project-folder scans.
@@ -36,6 +37,7 @@ See `docs/llm-wiki/release.md`.
 **中文 · 新增**
 - CLI 对话自动显示，选择自定义服务商时也不例外。查看历史不会修改终端对话，继续聊天会创建独立的应用副本。
 - 启动日志现在可帮助定位初始化缓慢的步骤。
+- 可为选中的本地 Linux 聊天管理和应用已审核的插件工具。安装后需明确授权并启用，只有经同意的工具调用成功后才会显示就绪。
 
 **中文 · 变更**
 - 读取设置和启动时不再重复初始化文件目录或扫描项目文件夹。

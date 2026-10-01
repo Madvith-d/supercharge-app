@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, path::Path, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use reqwest::{Client, Method, Url};
@@ -12,6 +12,7 @@ pub struct PluginApiConnection {
     current: Mutex<Option<Arc<AuthenticatedService>>>,
 }
 
+#[derive(Clone)]
 struct AuthenticatedService {
     base_url: Url,
     token: String,
@@ -27,6 +28,15 @@ pub struct ConnectionStatus {
     pub endpoint: Option<String>,
     pub connection_id: Option<String>,
     pub capabilities: Option<Value>,
+}
+
+pub struct BridgePlan {
+    pub endpoint: String,
+    pub bridge_token: String,
+    pub plugin_id: String,
+    pub server_id: String,
+    pub workspace_id: String,
+    pub release_digest: String,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +98,29 @@ fn mutation_key(key: &str) -> Result<&str, String> {
         return Err("Invalid request identifier".into());
     }
     Ok(key)
+}
+
+fn public_capabilities(capabilities: &Value) -> Value {
+    let mut public = serde_json::Map::new();
+    for key in [
+        "manifestVersions",
+        "apiVersions",
+        "sources",
+        "mcpTransports",
+        "publicMcpEndpoint",
+        "applicationIntegration",
+        "multiTenant",
+        "operationRetentionHours",
+        "maxOperations",
+        "maxRunningOperations",
+        "workspaceIds",
+        "scopes",
+    ] {
+        if let Some(value) = capabilities.get(key) {
+            public.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(public)
 }
 
 impl AuthenticatedService {
@@ -160,7 +193,7 @@ impl PluginApiConnection {
                 connected: true,
                 endpoint: Some(service.base_url.to_string()),
                 connection_id: Some(service.revision.clone()),
-                capabilities: Some(service.capabilities.clone()),
+                capabilities: Some(public_capabilities(&service.capabilities)),
             },
             None => ConnectionStatus {
                 connected: false,
@@ -203,6 +236,28 @@ impl PluginApiConnection {
         {
             return Err("Plugin API capabilities are invalid".into());
         }
+        let scopes = service
+            .capabilities
+            .get("scopes")
+            .and_then(Value::as_array)
+            .ok_or("Plugin API did not report credential scopes")?;
+        for required in ["read", "manage"] {
+            if !scopes.iter().any(|scope| scope.as_str() == Some(required)) {
+                return Err(format!("Plugin API key requires {required} access"));
+            }
+        }
+        if !service
+            .capabilities
+            .get("sources")
+            .and_then(Value::as_array)
+            .is_some_and(|sources| {
+                sources
+                    .iter()
+                    .any(|source| source.as_str() == Some("inline"))
+            })
+        {
+            return Err("Plugin API service does not support inline MCP definitions".into());
+        }
         *self.current.lock() = Some(Arc::new(service));
         Ok(self.status())
     }
@@ -212,11 +267,7 @@ impl PluginApiConnection {
         self.status()
     }
 
-    pub async fn execute(
-        &self,
-        connection_id: &str,
-        input: PluginRequest,
-    ) -> Result<Value, String> {
+    fn service(&self, connection_id: &str) -> Result<Arc<AuthenticatedService>, String> {
         let service = self
             .current
             .lock()
@@ -225,6 +276,165 @@ impl PluginApiConnection {
         if service.revision != connection_id {
             return Err("Plugin API connection changed; reload before retrying".into());
         }
+        Ok(service)
+    }
+
+    pub async fn bridge_capabilities(
+        &self,
+        connection_id: &str,
+        token: String,
+    ) -> Result<(String, Value), String> {
+        if token.len() < 32 || token.len() > 256 || token.chars().any(char::is_whitespace) {
+            return Err("Bridge key must contain 32–256 characters without whitespace".into());
+        }
+        let service = self.service(connection_id)?;
+        let bridge = AuthenticatedService {
+            base_url: service.base_url.clone(),
+            token: token.clone(),
+            client: service.client.clone(),
+            revision: String::new(),
+            capabilities: Value::Null,
+        };
+        let capabilities = bridge
+            .request(Method::GET, "/v1/capabilities", None, None)
+            .await?;
+        let scopes = capabilities
+            .get("scopes")
+            .and_then(Value::as_array)
+            .ok_or("Bridge key did not report scopes")?;
+        if !scopes.iter().any(|scope| scope.as_str() == Some("read"))
+            || !scopes.iter().any(|scope| scope.as_str() == Some("execute"))
+            || scopes.iter().any(|scope| scope.as_str() == Some("manage"))
+        {
+            return Err(
+                "Bridge key must have read and execute access, without manage access".into(),
+            );
+        }
+        Ok((token, capabilities))
+    }
+
+    pub fn management_target(&self, connection_id: &str) -> Result<(String, Value), String> {
+        let service = self.service(connection_id)?;
+        Ok((service.base_url.to_string(), service.capabilities.clone()))
+    }
+
+    pub async fn plugin(&self, connection_id: &str, plugin_id: &str) -> Result<Value, String> {
+        let service = self.service(connection_id)?;
+        service
+            .request(
+                Method::GET,
+                &format!("/v1/plugins/{}", safe_id(plugin_id)?),
+                None,
+                None,
+            )
+            .await
+    }
+
+    pub async fn prepare_bridge(
+        &self,
+        connection_id: &str,
+        plugin_id: &str,
+        server_id: &str,
+        workspace_id: &str,
+        workspace_path: &Path,
+        bridge_token: String,
+    ) -> Result<BridgePlan, String> {
+        safe_id(plugin_id)?;
+        safe_id(server_id)?;
+        safe_id(workspace_id)?;
+        let (endpoint, management_capabilities) = self.management_target(connection_id)?;
+        let parsed_endpoint =
+            Url::parse(&endpoint).map_err(|_| "Plugin API endpoint is invalid")?;
+        if parsed_endpoint.scheme() != "http"
+            || !matches!(
+                parsed_endpoint.host_str(),
+                Some("127.0.0.1" | "[::1]" | "::1" | "localhost")
+            )
+        {
+            return Err(
+                "Desktop managed MCP requires a target-local loopback Plugin API service".into(),
+            );
+        }
+        let expected_root = management_capabilities
+            .pointer(&format!("/workspaceRoots/{workspace_id}"))
+            .and_then(Value::as_str)
+            .ok_or("Selected Plugin API workspace is unavailable")?;
+        let expected_root = std::fs::canonicalize(expected_root)
+            .map_err(|_| "Plugin API workspace root is unavailable")?;
+        let actual_root = std::fs::canonicalize(workspace_path)
+            .map_err(|_| "Selected session workspace is unavailable")?;
+        if expected_root != actual_root {
+            return Err(
+                "Plugin API workspace does not match the selected session workspace".into(),
+            );
+        }
+        let plugin = self.plugin(connection_id, plugin_id).await?;
+        if plugin.get("enabled").and_then(Value::as_bool) != Some(true)
+            || plugin.get("trusted").and_then(Value::as_bool) != Some(true)
+        {
+            return Err("Plugin must be trusted and enabled before application".into());
+        }
+        if plugin
+            .pointer(&format!("/manifest/mcpServers/{server_id}"))
+            .is_none()
+        {
+            return Err("Selected MCP server is not present in the active plugin release".into());
+        }
+        let release_digest = plugin
+            .get("activeDigest")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or("Plugin release digest is invalid")?
+            .to_string();
+        let (bridge_token, capabilities) = self
+            .bridge_capabilities(connection_id, bridge_token)
+            .await?;
+        if capabilities
+            .get("executionBoundary")
+            .and_then(Value::as_str)
+            != Some("isolated-account")
+            || capabilities.get("agentUid").and_then(Value::as_u64)
+                != crate::managed_plugin_bridge::current_uid().map(u64::from)
+        {
+            return Err("Bridge key is not scoped to this isolated desktop agent identity".into());
+        }
+        let allowed_plugins = capabilities
+            .get("allowedPluginIds")
+            .and_then(Value::as_array)
+            .ok_or("Bridge key has no plugin allowlist")?;
+        if allowed_plugins.len() != 1 || allowed_plugins[0].as_str() != Some(plugin_id) {
+            return Err("Bridge key must be restricted to exactly the selected plugin".into());
+        }
+        let allowed_servers = capabilities
+            .pointer(&format!("/allowedMcpServers/{plugin_id}"))
+            .and_then(Value::as_array)
+            .ok_or("Bridge key has no server allowlist")?;
+        if allowed_servers.len() != 1 || allowed_servers[0].as_str() != Some(server_id) {
+            return Err("Bridge key must be restricted to exactly the selected MCP server".into());
+        }
+        let workspaces = capabilities
+            .get("workspaceIds")
+            .and_then(Value::as_array)
+            .ok_or("Bridge key has no workspace allowlist")?;
+        if workspaces.len() != 1 || workspaces[0].as_str() != Some(workspace_id) {
+            return Err("Bridge key must be restricted to exactly the selected workspace".into());
+        }
+        Ok(BridgePlan {
+            endpoint,
+            bridge_token,
+            plugin_id: plugin_id.to_string(),
+            server_id: server_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            release_digest,
+        })
+    }
+
+    pub async fn execute(
+        &self,
+        connection_id: &str,
+        input: PluginRequest,
+    ) -> Result<Value, String> {
+        let service = self.service(connection_id)?;
         match input {
             PluginRequest::List => {
                 service

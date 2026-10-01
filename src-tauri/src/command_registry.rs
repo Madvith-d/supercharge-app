@@ -237,6 +237,11 @@ pub fn app_invoke_handler(
         commands::plugin_api_connect,
         commands::plugin_api_disconnect,
         commands::plugin_api_request,
+        commands::plugin_api_bridge_status,
+        commands::plugin_api_bridge_apply,
+        commands::plugin_api_bridge_retry,
+        commands::plugin_api_bridge_verify,
+        commands::plugin_api_bridge_remove,
         // ── Plugins & plugin MCP auth ──
         commands::plugins_list,
         commands::plugin_enable,

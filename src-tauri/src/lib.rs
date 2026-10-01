@@ -98,6 +98,7 @@ mod editors;
 mod error;
 
 mod extensions;
+mod managed_plugin_bridge;
 mod mcp_oauth;
 mod plugin_api;
 mod plugin_auth_transport;
