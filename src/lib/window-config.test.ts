@@ -122,7 +122,8 @@ describe("window chrome", () => {
     expect(tray).toContain("pub fn hide_to_tray_accessory");
     const hideFn = tray.slice(tray.indexOf("pub fn hide_to_tray("));
     const innerStart = tray.indexOf("fn hide_to_tray_inner");
-    const inner = tray.slice(innerStart, innerStart + 1800);
+    const innerEnd = tray.indexOf("\n}", innerStart) + 2;
+    const inner = tray.slice(innerStart, innerEnd);
     expect(hideFn.startsWith("pub fn hide_to_tray(app: &AppHandle) {\n    hide_to_tray_inner(app, false);")).toBe(
       true,
     );

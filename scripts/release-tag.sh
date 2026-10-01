@@ -112,9 +112,19 @@ if p.is_file():
         raise SystemExit("failed to patch Cargo.lock grok-app version")
     p.write_text(lock2)
     print("Cargo.lock grok-app ->", ver)
+
+# Keep the ACP handshake fixture aligned with the advertised client version.
+p = Path("src-tauri/tests/fixtures/acp/handshake_initialize.json")
+fixture = json.loads(p.read_text())
+params = fixture["hostRequest"]["params"]
+params["clientInfo"]["version"] = ver
+params["_meta"]["clientVersion"] = ver
+p.write_text(json.dumps(fixture, indent=2) + "\n")
+print("ACP handshake fixture ->", ver)
 PY
 
 git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock \
+  src-tauri/tests/fixtures/acp/handshake_initialize.json \
   README.md README_EN.md README_ZH.md README_RU.md 2>/dev/null || true
 if [[ -n "$(git status --porcelain)" ]]; then
   git commit -m "chore: release $TAG"

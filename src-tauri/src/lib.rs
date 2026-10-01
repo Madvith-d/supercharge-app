@@ -95,8 +95,8 @@ mod error;
 
 mod extensions;
 mod mcp_oauth;
-mod plugin_auth_transport;
 mod plugin_api;
+mod plugin_auth_transport;
 mod plugin_contributions;
 mod plugin_mcp;
 mod plugin_ui_server;

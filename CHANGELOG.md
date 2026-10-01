@@ -26,6 +26,7 @@ See `docs/llm-wiki/release.md`.
 - Windows taskbar updates run separately from window controls.
 - Tray menu updates avoid a locking conflict that could freeze the app.
 - Closing the window skips unnecessary schedule checks.
+- Updated the Markdown parser to address a performance-related security issue.
 
 **中文 · 新增**
 - 插件可通过经过身份验证的本地 API 连接应用。
@@ -34,6 +35,7 @@ See `docs/llm-wiki/release.md`.
 - Windows 任务栏更新与窗口控制分开运行。
 - 托盘菜单更新避免了可能导致应用卡死的锁冲突。
 - 关闭窗口时跳过不必要的计划任务检查。
+- 更新 Markdown 解析器，修复与性能相关的安全问题。
 
 ## [0.2.44] - 2026-09-24
 

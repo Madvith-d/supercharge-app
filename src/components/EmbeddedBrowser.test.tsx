@@ -11,7 +11,7 @@ import { EmbeddedBrowser } from "./EmbeddedBrowser";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), close: vi.fn(), bounds: vi.fn(), navigate: vi.fn(), reload: vi.fn(),
-  show: vi.fn(), hide: vi.fn(), eval: vi.fn(),
+  show: vi.fn(), hide: vi.fn(), eval: vi.fn(), installDownloadHook: vi.fn(),
   handlers: new Map<string, (event: { payload: unknown }) => void>(),
 }));
 vi.mock("@/lib/api", () => ({
@@ -22,7 +22,7 @@ vi.mock("@/lib/api", () => ({
   sideBrowserNavigate: mocks.navigate,
   sideBrowserReload: mocks.reload,
   sideBrowserEval: mocks.eval,
-  sideBrowserInstallDownloadHook: vi.fn().mockResolvedValue(undefined),
+  sideBrowserInstallDownloadHook: mocks.installDownloadHook,
 }));
 
 beforeEach(() => {
@@ -37,7 +37,7 @@ beforeEach(() => {
     if (command === "plugin:webview|webview_hide") return mocks.hide();
     return undefined;
   }, { shouldMockEvents: true });
-  for (const fn of [mocks.create, mocks.close, mocks.bounds, mocks.navigate, mocks.reload, mocks.show, mocks.hide]) fn.mockResolvedValue(undefined);
+  for (const fn of [mocks.create, mocks.close, mocks.bounds, mocks.navigate, mocks.reload, mocks.show, mocks.hide, mocks.installDownloadHook]) fn.mockResolvedValue(undefined);
   mocks.eval.mockResolvedValue('"complete"');
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 850, y: 90, left: 850, top: 90, right: 1250, bottom: 690, width: 400, height: 600, toJSON: () => ({}) });
   resetNativeWebviewCoverForTests();
@@ -82,7 +82,7 @@ describe("EmbeddedBrowser native lifecycle", () => {
   it("reports native navigation without navigating back to the previous URL", async () => {
     const onNavigation = vi.fn();
     const view = render(<EmbeddedBrowser url="https://example.com" instanceId="nav" onNavigation={onNavigation} />);
-    await waitFor(() => expect(mocks.show).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.eval).toHaveBeenCalled());
     await act(async () => emit("side-browser://page-load", { label: "resource-browser-nav", phase: "finished", url: "https://example.com/next" }));
     expect(onNavigation).toHaveBeenCalledWith("https://example.com/next");
     view.rerender(<EmbeddedBrowser url="https://example.com/next" instanceId="nav" onNavigation={onNavigation} />);

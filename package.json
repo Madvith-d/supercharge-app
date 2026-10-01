@@ -1,7 +1,7 @@
 {
   "name": "supercharge-app",
   "private": true,
-  "version": "0.2.44",
+  "version": "0.2.45",
   "description": "Supercharge desktop workbench for local coding agents",
   "author": "Supercharge contributors",
   "license": "MIT",
@@ -115,5 +115,10 @@
     "typescript-eslint": "^8.65.0",
     "vite": "^6.3.5",
     "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "markdown-it@<14.3.1": "14.3.1"
+    }
   }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "supercharge-app"
-version = "0.2.44"
+version = "0.2.45"
 description = "Supercharge desktop workbench for local coding agents"
 authors = ["Supercharge contributors"]
 edition = "2021"
