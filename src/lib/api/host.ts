@@ -1,5 +1,7 @@
 /** Host detection + shared Tauri/mirror invoke helpers. */
 
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { listen as tauriListen } from "@tauri-apps/api/event";
 import {
   isMirrorClient,
   mirrorEnsureTransport,
@@ -39,8 +41,10 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     return mirrorInvoke<T>(cmd, args);
   }
   if (!isTauri()) throw new Error(`Tauri required: ${cmd}`);
-  const { invoke: inv } = await import("@tauri-apps/api/core");
-  return inv<T>(cmd, args);
+  // Dispatch synchronously before the first await. Dynamic-importing here
+  // yielded back to React on every click, letting a large workbench render run
+  // before native dialogs and other Host commands were even enqueued.
+  return tauriInvoke<T>(cmd, args);
 }
 
 export async function listen<T>(
@@ -52,7 +56,6 @@ export async function listen<T>(
     return mirrorListen<T>(event, handler);
   }
   if (!isTauri()) return () => {};
-  const { listen } = await import("@tauri-apps/api/event");
-  const un = await listen<T>(event, (e) => handler(e.payload));
+  const un = await tauriListen<T>(event, (e) => handler(e.payload));
   return un;
 }

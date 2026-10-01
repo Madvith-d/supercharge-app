@@ -515,7 +515,9 @@ pub fn open_http_url(url: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn projects_list() -> Result<Vec<Project>, String> {
-    Ok(store::load_projects())
+    tauri::async_runtime::spawn_blocking(store::load_projects)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Default cwd for chats without a bound project folder (`workspaces/general`).
@@ -527,7 +529,9 @@ pub async fn general_workspace_path() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn project_add(path: String, trust: bool) -> Result<Project, String> {
-    store::add_project(path, trust)
+    tauri::async_runtime::spawn_blocking(move || store::add_project(path, trust))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -554,7 +558,9 @@ pub async fn project_relocate(id: String, path: String) -> Result<Project, Strin
 
 #[tauri::command]
 pub async fn project_trust(id: String) -> Result<Project, String> {
-    store::trust_project(&id)
+    tauri::async_runtime::spawn_blocking(move || store::trust_project(&id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Set or clear the project-level permission tier (L10).

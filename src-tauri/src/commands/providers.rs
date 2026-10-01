@@ -29,19 +29,21 @@ pub async fn providers_cc_switch_import(
 pub async fn providers_list() -> Result<crate::providers::ProvidersListResult, String> {
     // Blocking file I/O off the async runtime (migrations / repairs / list).
     tauri::async_runtime::spawn_blocking(|| {
-        // One-time migration of legacy single relay secrets → multi-provider config.
-        let secrets = store::load_secrets();
-        let _ = crate::providers::maybe_migrate_legacy_relay(
-            secrets.relay_base_url.as_deref(),
-            secrets.relay_api_key.as_deref(),
-            secrets.default_model.as_deref(),
-        );
-        // Ensure agent transport retries are high enough for flaky custom relays.
-        let _ = crate::providers::ensure_models_retry_cap();
-        // Fix bases saved without /v1 (causes silent multi-minute inference retries).
-        let _ = crate::providers::repair_custom_base_urls();
-        // OpenCode Zen Go SSE trailers → loopback sanitize proxy base_url rewrite.
-        let _ = crate::relay_stream_proxy::repair_sanitize_proxy_bases();
+        // Repairs are process-start migration work, not list work. Settings and
+        // the composer can request this catalog independently; repeating all
+        // config/secrets reads and writes made the Providers page feel blocked.
+        static REPAIRS: std::sync::Once = std::sync::Once::new();
+        REPAIRS.call_once(|| {
+            let secrets = store::load_secrets();
+            let _ = crate::providers::maybe_migrate_legacy_relay(
+                secrets.relay_base_url.as_deref(),
+                secrets.relay_api_key.as_deref(),
+                secrets.default_model.as_deref(),
+            );
+            let _ = crate::providers::ensure_models_retry_cap();
+            let _ = crate::providers::repair_custom_base_urls();
+            let _ = crate::relay_stream_proxy::repair_sanitize_proxy_bases();
+        });
         crate::providers::list_custom_providers()
     })
     .await

@@ -358,9 +358,16 @@ impl SessionManager {
         self.journal_hard_end_for_busy_agents(app, reason);
         let drained = self.drain_all_agent_slots();
         let total = drained.acps.len();
-        for acp in drained.acps {
-            Self::kill_acp_bounded(&acp).await;
-        }
+        // Each process has its own bounded shutdown. Serial waits made a
+        // provider/model switch take N × the kill timeout with several warm
+        // sessions, holding the UI operation open for many seconds.
+        futures_util::future::join_all(
+            drained
+                .acps
+                .iter()
+                .map(|acp| Self::kill_acp_bounded(acp.as_ref())),
+        )
+        .await;
         tracing::info!(
             "recycle_all_agents reason={reason} killed={total} (live_shell={} bg={} parked={} prewarm={}) pending_invalidated={}",
             drained.had_live_shell as u8,
