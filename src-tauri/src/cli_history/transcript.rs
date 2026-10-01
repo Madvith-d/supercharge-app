@@ -45,10 +45,18 @@ pub fn read_messages(id: &str) -> Result<Option<Vec<ChatMessageStored>>, String>
     else {
         return Ok(None);
     };
+    read_messages_with_meta(&meta)
+}
+
+/// Reuse a caller's index snapshot; final ownership/source validation remains locked.
+pub fn read_messages_with_meta(
+    meta: &SessionMeta,
+) -> Result<Option<Vec<ChatMessageStored>>, String> {
+    let id = meta.id.as_str();
     let Some(source) = meta.cli_source.as_ref() else {
         return Ok(None);
     };
-    if owns_journal(&meta) {
+    if owns_journal(meta) {
         return Ok(Some(store::load_messages(id)));
     }
     let previous = cached(id, source);
@@ -80,7 +88,7 @@ pub fn read_messages(id: &str) -> Result<Option<Vec<ChatMessageStored>>, String>
             (cache.revision.clone(), cache.messages.clone())
         }
     };
-    // Recheck ownership after parsing, under the same lock as journal writers.
+    // Cache hits also recheck ownership/source under the journal writers' index lock.
     store::update_sessions_index(|list| {
         let current = list
             .iter()

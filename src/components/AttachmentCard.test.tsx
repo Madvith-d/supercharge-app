@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { AttachmentCard, type AttachmentCardLabels } from "./AttachmentCard";
 import { ImageViewerContext } from "./ImageViewerContext";
+import type { FileMediaPlayerProps } from "./FileMediaPlayer";
 import * as api from "@/lib/api";
 import { createT } from "@/i18n";
 
 vi.mock("./FileMediaPlayer", () => ({
-  FileMediaPlayer: ({ src, kind }: { src: string; kind: string }) => <div data-testid="player" data-kind={kind} data-src={src} />,
+  FileMediaPlayer: ({ src, kind, labels }: FileMediaPlayerProps) => (
+    <div data-testid="player" data-kind={kind} data-src={src} data-load-error={labels?.loadError} data-loading={labels?.loading} />
+  ),
 }));
 
 const tr = createT("en");
@@ -18,7 +21,10 @@ const labels: AttachmentCardLabels = {
   mediaLoadError: tr("media.loadError"), mediaLoading: tr("media.loading"),
 };
 
+let originalLang: string;
 beforeEach(() => {
+  originalLang = document.documentElement.lang;
+  document.documentElement.lang = "en";
   vi.spyOn(api, "isTauri").mockReturnValue(true);
   vi.spyOn(api, "isDesktopHost").mockReturnValue(true);
   vi.spyOn(api, "pathsClassify").mockResolvedValue([]);
@@ -26,7 +32,11 @@ beforeEach(() => {
   vi.spyOn(api, "pathOpen").mockResolvedValue(undefined as never);
   vi.spyOn(api, "pathReveal").mockResolvedValue(undefined as never);
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  document.documentElement.lang = originalLang;
+});
 
 function expectNoFilesystem() {
   expect(api.pathsClassify).not.toHaveBeenCalled();
@@ -71,6 +81,45 @@ describe("inline CLI attachments", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(toggle);
     expect(screen.queryByTestId("player")).toBeNull();
+    expectNoFilesystem();
+  });
+
+  it.each(["audio/wav", "video/mp4"])("provides localized %s player fallbacks and preserves label precedence", async (mime) => {
+    document.documentElement.lang = "de";
+    const de = createT("de");
+    const attachment = { path: `data:${mime};base64,AA==`, name: "recording", isDir: false };
+    const minimalLabels = { ...labels, mediaLoadError: undefined, previewBroken: undefined, mediaLoading: undefined };
+    const { rerender } = render(<AttachmentCard attachment={attachment} labels={minimalLabels} />);
+    fireEvent.click(screen.getByRole("button", { name: attachment.name }));
+    const player = await screen.findByTestId("player");
+    expect(player.getAttribute("data-load-error")).toBe(de("media.loadError"));
+    expect(player.getAttribute("data-loading")).toBe(de("media.loading"));
+
+    rerender(<AttachmentCard attachment={attachment} labels={{ ...minimalLabels, previewBroken: labels.previewBroken, previewPending: tr("attach.preview.pending") }} />);
+    expect(player.getAttribute("data-load-error")).toBe(labels.previewBroken);
+    expect(player.getAttribute("data-loading")).toBe(tr("attach.preview.pending"));
+
+    rerender(<AttachmentCard attachment={attachment} labels={labels} />);
+    expect(player.getAttribute("data-load-error")).toBe(labels.mediaLoadError);
+    expect(player.getAttribute("data-loading")).toBe(labels.mediaLoading);
+    expectNoFilesystem();
+  });
+
+  it.each(["audio/wav", "video/mp4", "image/png", "text/plain"])("keeps %s removable without an optional label", (mime) => {
+    document.documentElement.lang = "de";
+    const attachment = { path: `data:${mime};base64,AA==`, name: "attachment", isDir: false };
+    const onRemove = vi.fn();
+    const { rerender } = render(<AttachmentCard attachment={attachment} labels={labels} variant="chip" onRemove={onRemove} />);
+    fireEvent.click(screen.getByRole("button", { name: createT("de")("composer.attachRemove") }));
+    expect(onRemove).toHaveBeenCalledExactlyOnceWith(attachment);
+
+    const remove = tr("composer.attachRemove");
+    rerender(<AttachmentCard attachment={attachment} labels={{ ...labels, remove }} variant="chip" onRemove={onRemove} />);
+    fireEvent.click(screen.getByRole("button", { name: remove }));
+    expect(onRemove).toHaveBeenCalledTimes(2);
+
+    rerender(<AttachmentCard attachment={attachment} labels={{ ...labels, remove }} variant="chip" />);
+    expect(screen.queryByRole("button", { name: remove })).toBeNull();
     expectNoFilesystem();
   });
 

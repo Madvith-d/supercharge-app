@@ -229,8 +229,16 @@ pub fn write_session_bundle(
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("session not found: {session_id}"))?;
 
-    let messages = crate::cli_history::read_messages(session_id)?
-        .unwrap_or_else(|| store::load_messages(session_id));
+    let (messages, cli_transcript_error) = match crate::cli_history::read_messages(session_id) {
+        Ok(messages) => (
+            messages.unwrap_or_else(|| store::load_messages(session_id)),
+            None,
+        ),
+        Err(error) => (
+            store::load_messages(session_id),
+            Some(store::redact_text(&error)),
+        ),
+    };
     let settings = store::load_settings();
     let projects = store::load_projects();
     let project = meta
@@ -271,6 +279,7 @@ pub fn write_session_bundle(
         "sessionDataMode": settings.session_data_mode,
         "agentDirFound": agent_dir.is_some(),
         "messageCount": messages.len(),
+        "cliTranscriptError": cli_transcript_error,
         "hasRuntimeSnapshot": runtime_json.is_some(),
     });
     write_zip_str(&mut zip, opts, "meta.json", &pretty_json(&export_meta)?)?;

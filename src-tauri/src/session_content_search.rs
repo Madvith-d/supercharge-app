@@ -195,9 +195,13 @@ fn scan_session(meta: &SessionMeta, query: &str) -> Option<SessionContentHit> {
     } else {
         return None;
     }
-    let messages = crate::cli_history::read_messages(&meta.id)
-        .ok()?
-        .unwrap_or_else(|| store::load_messages(&meta.id));
+    let messages = if meta.cli_source.is_some() {
+        crate::cli_history::read_messages_with_meta(meta)
+            .ok()?
+            .unwrap_or_else(|| store::load_messages(&meta.id))
+    } else {
+        store::load_messages(&meta.id)
+    };
     let iter = messages
         .iter()
         .map(|m| (m.role.as_str(), m.content.as_str()));
@@ -275,6 +279,46 @@ mod tests {
         let snip = make_snippet(content, idx, 6);
         assert!(snip.contains("TARGET"));
         assert!(!snip.is_empty());
+    }
+
+    #[test]
+    fn normal_app_scan_does_not_reload_the_session_index() {
+        struct TestHome {
+            root: std::path::PathBuf,
+            previous: Option<std::ffi::OsString>,
+        }
+        impl Drop for TestHome {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(value) => std::env::set_var("SUPERCHARGE_APP_HOME", value),
+                    None => std::env::remove_var("SUPERCHARGE_APP_HOME"),
+                }
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+        let _lock = crate::paths::APP_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = TestHome {
+            root: std::env::temp_dir().join(format!("content-search-{}", uuid::Uuid::new_v4())),
+            previous: std::env::var_os("SUPERCHARGE_APP_HOME"),
+        };
+        std::env::set_var("SUPERCHARGE_APP_HOME", &home.root);
+        let meta = store::create_session(None, Some("App conversation".into()), false).unwrap();
+        let message = serde_json::json!([{
+            "id": "message", "role": "user", "content": "searchable App prompt",
+            "createdAt": "2024-02-03T00:00:00Z"
+        }]);
+        fs::write(
+            session_dir(&meta.id).join("messages.json"),
+            message.to_string(),
+        )
+        .unwrap();
+        let index = home.root.join("sessions_index.json");
+        fs::write(&index, b"invalid index").unwrap();
+        let hit = scan_session(&meta, "searchable").unwrap();
+        assert_eq!(hit.snippet, "searchable App prompt");
+        assert_eq!(fs::read(index).unwrap(), b"invalid index");
     }
 
     #[test]

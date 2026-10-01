@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn session_bundle_reports_unreadable_cli_history_without_failing_export() {
+    let _guard = crate::paths::APP_HOME_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = std::env::temp_dir().join(format!("cli-bundle-{}", uuid::Uuid::new_v4()));
+    let previous_home = std::env::var_os("GROK_APP_HOME");
+    std::env::set_var("GROK_APP_HOME", &home);
+    crate::paths::ensure_app_dirs().unwrap();
+    let mut meta = store::create_session(None, Some("Unreadable history".into()), false).unwrap();
+    meta.cli_source = Some(crate::cli_history::CliSessionSource {
+        source_home: home.join("missing-source").to_string_lossy().into_owned(),
+        relative_dir: std::path::PathBuf::from("sessions")
+            .join("workspace")
+            .join("missing")
+            .to_string_lossy()
+            .into_owned(),
+        agent_session_id: "missing".into(),
+        cwd: None,
+        title: None,
+        updated_at: None,
+        revision: String::new(),
+        app_owned: false,
+    });
+    store::update_session_meta(&meta).unwrap();
+    let journal = paths::session_dir(&meta.id).join("messages.json");
+    fs::remove_file(&journal).unwrap();
+    assert!(crate::cli_history::read_messages(&meta.id).is_err());
+
+    let bundle = write_session_bundle(&meta.id, None).unwrap();
+    let mut zip = zip::ZipArchive::new(fs::File::open(&bundle).unwrap()).unwrap();
+    let mut raw = String::new();
+    zip.by_name("meta.json")
+        .unwrap()
+        .read_to_string(&mut raw)
+        .unwrap();
+    let exported: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(!exported["cliTranscriptError"].as_str().unwrap().is_empty());
+    assert_eq!(exported["messageCount"], 0);
+    raw.clear();
+    zip.by_name("host/messages.json")
+        .unwrap()
+        .read_to_string(&mut raw)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
+        serde_json::json!([])
+    );
+    assert!(
+        !journal.exists(),
+        "diagnostics must not claim the source journal"
+    );
+    drop(zip);
+    fs::remove_file(bundle).unwrap();
+    fs::remove_dir_all(home).unwrap();
+    if let Some(previous) = previous_home {
+        std::env::set_var("GROK_APP_HOME", previous);
+    } else {
+        std::env::remove_var("GROK_APP_HOME");
+    }
+}
+
+#[test]
 fn reset_keeps_secrets_when_requested() {
     let _g = crate::paths::APP_HOME_ENV_LOCK
         .lock()

@@ -374,6 +374,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let home = std::env::temp_dir().join(format!("rewind-mapping-{}", uuid::Uuid::new_v4()));
+        let previous_home = std::env::var_os("GROK_APP_HOME");
         std::env::set_var("GROK_APP_HOME", &home);
         crate::paths::ensure_app_dirs().unwrap();
         let mut meta = store::create_session(None, None, false).unwrap();
@@ -401,7 +402,11 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         assert!(materialize_rewind_journal(&meta.id).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
-        std::env::remove_var("GROK_APP_HOME");
+        if let Some(previous) = previous_home {
+            std::env::set_var("GROK_APP_HOME", previous);
+        } else {
+            std::env::remove_var("GROK_APP_HOME");
+        }
         std::fs::remove_dir_all(home).unwrap();
     }
 }

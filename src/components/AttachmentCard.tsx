@@ -8,6 +8,7 @@
  */
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { createT, resolveLocale } from "@/i18n";
 import type { Attachment } from "@/lib/attachments";
 import {
   isAudioPath,
@@ -83,6 +84,10 @@ export function AttachmentCard({
   onRemove,
   galleryPaths,
 }: AttachmentCardProps) {
+  const tr = createT(resolveLocale(typeof document !== "undefined" ? document.documentElement.lang : undefined));
+  const removeLabel = labels.remove ?? tr("composer.attachRemove");
+  const mediaLoadError = labels.mediaLoadError ?? labels.previewBroken ?? tr("media.loadError");
+  const mediaLoading = labels.mediaLoading ?? labels.previewPending ?? tr("media.loading");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const isInline = isInlineAttachmentPath(attachment.path);
   const isImg = !attachment.isDir && isImagePath(attachment.path);
@@ -292,21 +297,21 @@ export function AttachmentCard({
             <span className="att-card__name">{attachment.name}</span>
           </button>
         </div>
-        {onRemove && labels.remove && (
-          <button type="button" className="attach-chip__x" aria-label={labels.remove} onClick={() => onRemove(attachment)}>
+        {onRemove && (
+          <button type="button" className="attach-chip__x" aria-label={removeLabel} onClick={() => onRemove(attachment)}>
             <IconClose size={11} />
           </button>
         )}
         {mediaOpen && (
-          <Suspense fallback={labels.mediaLoading ?? labels.previewPending ?? null}>
+          <Suspense fallback={mediaLoading}>
             <FileMediaPlayer
               compact
               src={attachment.path}
               kind={mediaKind}
               title={attachment.name}
               labels={{
-                loadError: labels.mediaLoadError ?? labels.previewBroken ?? "",
-                loading: labels.mediaLoading ?? labels.previewPending ?? "",
+                loadError: mediaLoadError,
+                loading: mediaLoading,
                 openExternal: labels.open,
               }}
             />
@@ -374,27 +379,18 @@ export function AttachmentCard({
               </>
             )}
           </button>
-          {onRemove && labels.remove ? (
-            <Tip label={labels.remove}>
+          {onRemove && (
+            <Tip label={removeLabel}>
               <button
                 type="button"
                 className="attach-chip__x"
-                aria-label={labels.remove}
+                aria-label={removeLabel}
                 onClick={() => onRemove(attachment)}
               >
                 <IconClose size={11} />
               </button>
             </Tip>
-          ) : onRemove ? (
-            <button
-              type="button"
-              className="attach-chip__x"
-              aria-label={labels.remove}
-              onClick={() => onRemove(attachment)}
-            >
-              <IconClose size={11} />
-            </button>
-          ) : null}
+          )}
           <ContextMenu
             open={!!menu}
             x={menu?.x ?? 0}

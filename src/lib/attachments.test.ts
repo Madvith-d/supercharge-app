@@ -477,6 +477,23 @@ also /tmp/other.png and /tmp/clip.mp4 and not a file.`;
     expect(out![0]!.name).toBe("notes.txt");
   });
 
+  it.each([
+    "`/sess/audio/recording.wav`",
+    "`recording.wav`",
+    "[recording](audio/recording.wav)",
+    "![recording](recording.wav)",
+  ])("keeps referenced audio attachments that MarkdownChat does not inline: %s", (content) => {
+    const audio = { path: "/sess/audio/recording.wav", name: "recording.wav", isDir: false };
+    const image = { path: "/sess/images/1.jpg", name: "1.jpg", isDir: false };
+    const video = { path: "/sess/videos/1.mp4", name: "1.mp4", isDir: false };
+    expect(filterAttachmentsNotInlined(`${content}\n\`images/1.jpg\`\n\`videos/1.mp4\``, [audio, image, video])).toEqual([audio]);
+  });
+
+  it("keeps a referenced remote audio attachment", () => {
+    const audio = { path: "https://example.com/audio/recording.mp3", name: "recording.mp3", isDir: false };
+    expect(filterAttachmentsNotInlined(`\`${audio.path}\``, [audio])).toEqual([audio]);
+  });
+
   it("filterEchoedUserAttachments drops assistant copies of the user's own files", () => {
     const user = [
       {

@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 #[test]
 fn malformed_nested_native_context_is_rejected_before_cli_can_drop_it() {
     let valid = json!({"type":"assistant", "content":"", "tool_calls":[

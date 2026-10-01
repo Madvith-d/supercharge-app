@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -263,7 +264,8 @@ pub fn search_cli_sessions(
         .unwrap_or_else(|_| home.clone())
         .display()
         .to_string();
-    let local = search_local_sessions(q, lim, session_data_mode)?;
+    let mut listing = list_cli_sessions(session_data_mode)?;
+    let local = search_local_sessions(q, lim, &mut listing);
     if local.len() >= lim as usize {
         return Ok(local);
     }
@@ -273,7 +275,7 @@ pub fn search_cli_sessions(
         match run_sessions_search_cli(path, &home, q, lim) {
             Ok(hits) if !hits.is_empty() => {
                 let mut merged = local;
-                for hit in enrich_search_hits(hits, session_data_mode, &source_home, "cli") {
+                for hit in enrich_search_hits(hits, &listing, &source_home, "cli") {
                     if !merged.iter().any(|existing| {
                         existing.agent_session_id == hit.agent_session_id
                             && existing.source_home == hit.source_home
@@ -681,22 +683,24 @@ fn truncate_err(s: &str, max: usize) -> String {
 
 fn enrich_search_hits(
     hits: Vec<RawSearchHit>,
-    session_data_mode: &str,
+    local: &[CliSessionSummary],
     source_home: &str,
     source: &str,
 ) -> Vec<CliSessionSearchHit> {
-    let local = list_cli_sessions(session_data_mode).unwrap_or_default();
-    let mut by_id = HashMap::<String, Option<CliSessionSummary>>::new();
-    for row in local.into_iter().filter(|s| s.source_home == source_home) {
+    let mut by_id = HashMap::<&str, Option<&CliSessionSummary>>::new();
+    for row in local.iter().filter(|s| s.source_home == source_home) {
         by_id
-            .entry(row.agent_session_id.clone())
+            .entry(row.agent_session_id.as_str())
             .and_modify(|entry| *entry = None)
             .or_insert(Some(row));
     }
 
     hits.into_iter()
         .map(|h| {
-            if let Some(loc) = by_id.get(&h.agent_session_id).and_then(Option::as_ref) {
+            if let Some(loc) = by_id
+                .get(h.agent_session_id.as_str())
+                .and_then(Option::as_ref)
+            {
                 CliSessionSearchHit {
                     agent_session_id: h.agent_session_id,
                     title: if h.title.is_empty() {
@@ -743,43 +747,47 @@ fn enrich_search_hits(
 fn search_local_sessions(
     query: &str,
     limit: u32,
-    session_data_mode: &str,
-) -> Result<Vec<CliSessionSearchHit>, String> {
+    list: &mut [CliSessionSummary],
+) -> Vec<CliSessionSearchHit> {
     let q = query.trim().to_ascii_lowercase();
     if q.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
-    let list = list_cli_sessions(session_data_mode)?;
     let mut out = Vec::new();
-    for mut row in list {
-        // Lazy first-prompt only when title/id/cwd did not already match —
-        // but CLI search is meant to hit first prompts, so always load when
-        // cheap enough. Cap body read via first user message only.
-        let prompt = read_first_user_prompt(Path::new(&row.dir));
-        row.first_prompt = prompt.clone();
-
-        let hay_title = row.title.to_ascii_lowercase();
-        let hay_id = row.agent_session_id.to_ascii_lowercase();
-        let hay_cwd = row.cwd.as_deref().unwrap_or("").to_ascii_lowercase();
-        let hay_prompt = prompt.as_deref().unwrap_or("").to_ascii_lowercase();
-        if !(hay_title.contains(&q)
-            || hay_id.contains(&q)
-            || (!hay_cwd.is_empty() && hay_cwd.contains(&q))
-            || (!hay_prompt.is_empty() && hay_prompt.contains(&q)))
-        {
-            continue;
+    for row in list {
+        let metadata_matches = row.title.to_ascii_lowercase().contains(&q)
+            || row.agent_session_id.to_ascii_lowercase().contains(&q)
+            || row
+                .cwd
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains(&q);
+        if !metadata_matches {
+            if row.first_prompt.is_none() {
+                row.first_prompt = read_first_user_prompt(Path::new(&row.dir));
+            }
+            if !row
+                .first_prompt
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .contains(&q)
+            {
+                continue;
+            }
         }
         out.push(CliSessionSearchHit {
-            agent_session_id: row.agent_session_id,
-            title: row.title,
-            cwd: row.cwd,
-            updated_at: row.updated_at,
-            dir: row.dir,
+            agent_session_id: row.agent_session_id.clone(),
+            title: row.title.clone(),
+            cwd: row.cwd.clone(),
+            updated_at: row.updated_at.clone(),
+            dir: row.dir.clone(),
             num_messages: row.num_messages,
             already_linked: row.already_linked,
-            app_session_id: row.app_session_id,
-            source_home: row.source_home,
-            first_prompt: prompt,
+            app_session_id: row.app_session_id.clone(),
+            source_home: row.source_home.clone(),
+            first_prompt: row.first_prompt.clone(),
             status: Some("local".into()),
             source: "local".into(),
         });
@@ -787,8 +795,10 @@ fn search_local_sessions(
             break;
         }
     }
-    Ok(out)
+    out
 }
+
+const FIRST_PROMPT_READ_LIMIT: u64 = 256 * 1024;
 
 /// First user message body from chat_history.jsonl (best-effort, capped).
 pub fn read_first_user_prompt(dir: &Path) -> Option<String> {
@@ -796,8 +806,21 @@ pub fn read_first_user_prompt(dir: &Path) -> Option<String> {
     if !history.is_file() {
         return None;
     }
-    let raw = fs::read_to_string(&history).ok()?;
-    for line in raw.lines() {
+    first_user_prompt_from_reader(fs::File::open(history).ok()?)
+}
+
+fn first_user_prompt_from_reader(reader: impl Read) -> Option<String> {
+    // Limit below buffering so even a single huge JSONL record has bounded I/O.
+    let mut reader = BufReader::new(reader.take(FIRST_PROMPT_READ_LIMIT));
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if !line.ends_with('\n') && reader.get_ref().limit() == 0 {
+            return None;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -822,7 +845,6 @@ pub fn read_first_user_prompt(dir: &Path) -> Option<String> {
         let capped: String = content.chars().take(500).collect();
         return Some(capped);
     }
-    None
 }
 
 fn read_summary_bits(
@@ -2887,6 +2909,145 @@ Total: 1
         let p = read_first_user_prompt(&dir).unwrap();
         assert_eq!(p, "search me please");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn first_prompt_reader_stops_early_and_caps_total_bytes() {
+        struct CountedReader<R> {
+            inner: R,
+            bytes: usize,
+        }
+        impl<R: Read> Read for CountedReader<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.inner.read(buf)?;
+                self.bytes += count;
+                Ok(count)
+            }
+        }
+        let prompt = b"{\"role\":\"user\",\"content\":\"early prompt\"}\n";
+        let mut reader = CountedReader {
+            inner: prompt.as_slice().chain(std::io::repeat(b'x')),
+            bytes: 0,
+        };
+        assert_eq!(
+            first_user_prompt_from_reader(&mut reader).as_deref(),
+            Some("early prompt")
+        );
+        assert!(reader.bytes < FIRST_PROMPT_READ_LIMIT as usize);
+
+        let mut reader = CountedReader {
+            inner: std::io::repeat(b'x'),
+            bytes: 0,
+        };
+        assert!(first_user_prompt_from_reader(&mut reader).is_none());
+        assert_eq!(reader.bytes, FIRST_PROMPT_READ_LIMIT as usize);
+
+        let mut reader = CountedReader {
+            inner: std::io::repeat(b'\n')
+                .take(FIRST_PROMPT_READ_LIMIT)
+                .chain(prompt.as_slice()),
+            bytes: 0,
+        };
+        assert!(first_user_prompt_from_reader(&mut reader).is_none());
+        assert_eq!(reader.bytes, FIRST_PROMPT_READ_LIMIT as usize);
+    }
+
+    #[test]
+    fn first_prompt_reader_handles_eof_malformed_rows_and_unicode_cap() {
+        let raw = format!(
+            "broken\n{{\"role\":\"user\",\"content\":\"{}\"}}",
+            "界".repeat(600)
+        );
+        let prompt = first_user_prompt_from_reader(raw.as_bytes()).unwrap();
+        assert_eq!(prompt.chars().count(), 500);
+        assert_eq!(prompt, "界".repeat(500));
+    }
+
+    fn search_summary(dir: &Path) -> CliSessionSummary {
+        CliSessionSummary {
+            agent_session_id: "agent-id".into(),
+            title: "Metadata title".into(),
+            cwd: Some("/project/workspace".into()),
+            updated_at: "2024-02-03T00:00:00Z".into(),
+            dir: dir.to_string_lossy().into_owned(),
+            num_messages: 2,
+            already_linked: true,
+            app_session_id: Some("app-id".into()),
+            source_home: "local-home".into(),
+            first_prompt: None,
+        }
+    }
+
+    #[test]
+    fn local_search_matches_metadata_before_reading_prompts_and_reuses_listing() {
+        let dir = std::env::temp_dir().join(format!("cli-search-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("chat_history.jsonl"),
+            b"{\"role\":\"user\",\"content\":\"unique prompt\"}\n",
+        )
+        .unwrap();
+        let mut listing = vec![search_summary(&dir), search_summary(&dir)];
+        for query in ["METADATA", "agent-id", "workspace"] {
+            let hits = search_local_sessions(query, 1, &mut listing);
+            assert_eq!(hits.len(), 1);
+            assert!(hits[0].first_prompt.is_none());
+            assert!(listing.iter().all(|row| row.first_prompt.is_none()));
+            assert!(hits[0].already_linked);
+            assert_eq!(hits[0].app_session_id.as_deref(), Some("app-id"));
+        }
+        let hits = search_local_sessions("unique", 1, &mut listing);
+        assert_eq!(hits[0].first_prompt.as_deref(), Some("unique prompt"));
+        assert!(
+            listing[1].first_prompt.is_none(),
+            "stop reading at the result limit"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        listing.pop();
+        assert_eq!(search_local_sessions("unique", 1, &mut listing).len(), 1);
+        assert!(search_local_sessions("absent", 1, &mut listing).is_empty());
+        assert!(search_local_sessions("  ", 1, &mut listing).is_empty());
+        let hits = enrich_search_hits(
+            vec![RawSearchHit {
+                agent_session_id: "agent-id".into(),
+                title: String::new(),
+                first_prompt: None,
+                status: Some("local".into()),
+                updated_label: None,
+            }],
+            &listing,
+            "local-home",
+            "cli",
+        );
+        assert_eq!(hits[0].title, "Metadata title");
+        assert_eq!(hits[0].first_prompt.as_deref(), Some("unique prompt"));
+        assert_eq!(hits[0].dir, listing[0].dir);
+    }
+
+    #[test]
+    fn search_enrichment_keeps_home_identity_and_ambiguous_ids_safe() {
+        let mut listing = vec![
+            search_summary(Path::new("one")),
+            search_summary(Path::new("two")),
+        ];
+        listing[1].source_home = "other-home".into();
+        let raw = RawSearchHit {
+            agent_session_id: "agent-id".into(),
+            title: "CLI title".into(),
+            first_prompt: Some("CLI prompt".into()),
+            status: Some("remote".into()),
+            updated_label: Some("yesterday".into()),
+        };
+        let hits = enrich_search_hits(vec![raw.clone()], &listing, "local-home", "cli");
+        assert_eq!(hits[0].dir, "one");
+        assert_eq!(hits[0].first_prompt.as_deref(), Some("CLI prompt"));
+        listing[1].source_home = "local-home".into();
+        let hits = enrich_search_hits(vec![raw], &listing, "local-home", "cli");
+        assert!(hits[0].dir.is_empty());
+        assert!(!hits[0].already_linked);
+        assert!(hits[0].app_session_id.is_none());
+        assert_eq!(hits[0].title, "CLI title");
+        assert_eq!(hits[0].updated_at, "yesterday");
     }
 
     #[test]

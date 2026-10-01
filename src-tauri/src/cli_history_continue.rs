@@ -50,6 +50,19 @@ pub struct PreparedContinuation {
     pub directory: PathBuf,
     pub source_digest: String,
     pub lease: Option<std::fs::File>,
+    cleanup_on_drop: std::cell::Cell<bool>,
+}
+
+impl Drop for PreparedContinuation {
+    fn drop(&mut self) {
+        if self.cleanup_on_drop.get() {
+            // Only fresh, unrecorded copies are disposable; release Windows handles first.
+            drop(self.lease.take());
+            if let Err(error) = fs::remove_dir_all(&self.directory) {
+                tracing::warn!(directory = %self.directory.display(), %error, "Remove unrecorded CLI continuation");
+            }
+        }
+    }
 }
 
 /// Resolve a read-only history root without confusing provenance with execution.
@@ -124,12 +137,12 @@ pub fn fork_source(meta: &SessionMeta) -> Result<Option<CliSessionSource>, Strin
 
 fn execution_directory(meta: &SessionMeta) -> Option<PathBuf> {
     let bytes = fs::read(crate::paths::session_dir(&meta.id).join("cli_execution.json")).ok()?;
-    let execution: CliSessionSource = serde_json::from_slice(&bytes).ok()?;
-    if meta
-        .agent_session_id
-        .as_deref()
-        .is_some_and(|id| id != execution.agent_session_id)
-    {
+    let record: Value = serde_json::from_slice(&bytes).ok()?;
+    let execution: CliSessionSource = serde_json::from_value(record.clone()).ok()?;
+    if meta.agent_session_id.as_deref().is_some_and(|id| {
+        id != execution.agent_session_id
+            && record.get("previousAgentSessionId").and_then(Value::as_str) != Some(id)
+    }) {
         return None;
     }
     crate::cli_history::resolve_source_in(&execution, &crate::cli_history::allowed_source_homes())
@@ -231,7 +244,7 @@ fn prepare_directory(
         .and_then(Path::parent)
         .and_then(Path::parent);
     let same_home = fs::canonicalize(runtime_home).ok().as_deref() == existing_home;
-    let mut prepared = if is_execution && same_home && directory.join(ORIGIN_FILE).exists() {
+    let prepared = if is_execution && same_home && directory.join(ORIGIN_FILE).exists() {
         let marker: Value = serde_json::from_slice(
             &read_regular(&directory.join(ORIGIN_FILE), MAX_BYTES).map_err(|e| e.to_string())?,
         )
@@ -249,6 +262,7 @@ fn prepare_directory(
                 .unwrap_or_default()
                 .to_string(),
             lease: None,
+            cleanup_on_drop: std::cell::Cell::new(false),
         }
     } else {
         fork_state(
@@ -262,6 +276,14 @@ fn prepare_directory(
         )
         .map_err(|e| format!("CLI history continuation: {e}"))?
     };
+    finish_preparation(prepared, cwd, model_id)
+}
+
+fn finish_preparation(
+    mut prepared: PreparedContinuation,
+    cwd: &Path,
+    model_id: &str,
+) -> Result<PreparedContinuation, String> {
     let mut lock_options = OpenOptions::new();
     lock_options
         .read(true)
@@ -319,10 +341,15 @@ pub fn record_execution(meta: &SessionMeta, prepared: &PreparedContinuation) -> 
     execution.agent_session_id = prepared.agent_session_id.clone();
     execution.app_owned = true;
     execution.revision = prepared.source_digest.clone();
+    let mut record = serde_json::to_value(&execution).map_err(|e| e.to_string())?;
+    // The index may still contain the previous identity if the remaining commit fails.
+    record["previousAgentSessionId"] = json!(meta.agent_session_id);
     crate::store_lock::write_bytes_atomic(
         &crate::paths::session_dir(&meta.id).join("cli_execution.json"),
-        &serde_json::to_vec(&execution).map_err(|e| e.to_string())?,
-    )
+        &serde_json::to_vec(&record).map_err(|e| e.to_string())?,
+    )?;
+    prepared.cleanup_on_drop.set(false);
+    Ok(())
 }
 
 fn reject_terminal_owner(home: &Path, id: &str) -> std::io::Result<()> {
@@ -775,6 +802,7 @@ fn fork_state(
             directory: target,
             source_digest,
             lease: None,
+            cleanup_on_drop: std::cell::Cell::new(true),
         })
     })();
     if result.is_err() {

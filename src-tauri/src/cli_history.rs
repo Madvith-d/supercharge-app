@@ -539,4 +539,6 @@ pub async fn cli_history_sync(app: tauri::AppHandle) -> Result<bool, String> {
     .map_err(|e| e.to_string())?
 }
 
-pub use transcript::{materialize_execution, materialize_for_app, read_messages};
+pub use transcript::{
+    materialize_execution, materialize_for_app, read_messages, read_messages_with_meta,
+};

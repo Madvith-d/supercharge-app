@@ -10,6 +10,51 @@ fn startup_system_rows_do_not_count_as_a_terminal_conversation() {
     })));
 }
 
+struct AppFixture {
+    _fixture: Fixture,
+    previous: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl AppFixture {
+    fn new() -> Self {
+        let lock = crate::paths::APP_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let fixture = Fixture::new();
+        let previous = std::env::var_os("SUPERCHARGE_APP_HOME");
+        std::env::set_var("SUPERCHARGE_APP_HOME", &fixture.0);
+        crate::paths::ensure_app_dirs().unwrap();
+        Self {
+            _fixture: fixture,
+            previous,
+            _lock: lock,
+        }
+    }
+
+    fn source(&self) -> SessionMeta {
+        let home = crate::paths::agent_home_dir();
+        let dir = session(&home, "cwd", "id");
+        fs::write(
+            dir.join("chat_history.jsonl"),
+            b"{\"role\":\"user\",\"content\":\"searchable terminal prompt\"}\n",
+        )
+        .unwrap();
+        let meta = new_meta(&discover(&[home])[0]);
+        store::save_sessions_index(std::slice::from_ref(&meta)).unwrap();
+        meta
+    }
+}
+
+impl Drop for AppFixture {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var("SUPERCHARGE_APP_HOME", value),
+            None => std::env::remove_var("SUPERCHARGE_APP_HOME"),
+        }
+    }
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -369,6 +414,155 @@ fn existing_even_empty_journals_and_forks_always_win_over_sources() {
     meta.fork_agent_session = false;
     meta.fork_rewind_prompt_index = Some(0);
     assert!(transcript::owns_journal_with(&meta, false));
+}
+
+#[test]
+fn known_metadata_reads_keep_cache_separate_and_revalidate_stale_snapshots() {
+    let fixture = AppFixture::new();
+    let meta = fixture.source();
+    let messages = read_messages_with_meta(&meta).unwrap().unwrap();
+    assert_eq!(messages[0].content, "searchable terminal prompt");
+    let dir = crate::paths::session_dir(&meta.id);
+    assert!(!dir.join("messages.json").exists());
+    let cache = fs::read(dir.join("cli_transcript.json")).unwrap();
+    assert_eq!(
+        read_messages(&meta.id).unwrap().unwrap()[0].content,
+        messages[0].content
+    );
+
+    let mut current = meta.clone();
+    current.cli_source.as_mut().unwrap().relative_dir = "sessions/other/id".into();
+    store::save_sessions_index(&[current]).unwrap();
+    assert!(read_messages_with_meta(&meta)
+        .unwrap_err()
+        .contains("source changed"));
+
+    for ownership in ["app", "fork", "rewind"] {
+        let mut current = meta.clone();
+        match ownership {
+            "app" => current.cli_source.as_mut().unwrap().app_owned = true,
+            "fork" => current.fork_agent_session = true,
+            _ => current.fork_rewind_prompt_index = Some(0),
+        }
+        store::save_sessions_index(&[current]).unwrap();
+        assert!(
+            read_messages_with_meta(&meta).unwrap().unwrap().is_empty(),
+            "{ownership}"
+        );
+    }
+    store::save_sessions_index(&[]).unwrap();
+    assert!(read_messages_with_meta(&meta)
+        .unwrap_err()
+        .contains("removed"));
+    assert_eq!(fs::read(dir.join("cli_transcript.json")).unwrap(), cache);
+    assert!(!dir.join("messages.json").exists());
+}
+
+#[test]
+fn cache_hit_waits_for_index_transaction_and_returns_new_app_journal() {
+    let fixture = AppFixture::new();
+    let meta = fixture.source();
+    let mut live = read_messages_with_meta(&meta).unwrap().unwrap();
+    live[0].content = "live App turn".into();
+    let journal = crate::paths::session_dir(&meta.id).join("messages.json");
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let reader = store::update_sessions_index(|index| {
+        let snapshot = meta.clone();
+        let reader = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx.send(read_messages_with_meta(&snapshot)).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            matches!(
+                result_rx.recv_timeout(std::time::Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "cache hits must validate under the index lock"
+        );
+        crate::store_lock::write_bytes_replace(&journal, &serde_json::to_vec(&live).unwrap())?;
+        index[0].cli_source.as_mut().unwrap().app_owned = true;
+        Ok(reader)
+    })
+    .unwrap();
+    let messages = result_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    reader.join().unwrap();
+    assert_eq!(messages[0].content, "live App turn");
+    assert_eq!(store::load_messages(&meta.id)[0].content, "live App turn");
+    fs::write(&journal, b"[]").unwrap();
+    assert!(read_messages_with_meta(&meta).unwrap().unwrap().is_empty());
+}
+
+#[test]
+fn known_non_cli_metadata_does_not_load_or_recover_the_index() {
+    let fixture = AppFixture::new();
+    let mut meta = fixture.source();
+    meta.cli_source = None;
+    let index = crate::paths::app_data_root().join("sessions_index.json");
+    fs::write(&index, b"invalid index").unwrap();
+    assert!(read_messages_with_meta(&meta).unwrap().is_none());
+    assert_eq!(fs::read(index).unwrap(), b"invalid index");
+}
+
+#[test]
+fn content_search_reads_app_journals_and_cli_projections_without_claiming_sources() {
+    let fixture = AppFixture::new();
+    let source = fixture.source();
+    let mut messages = read_messages_with_meta(&source).unwrap().unwrap();
+    let mut app = source.clone();
+    app.id = uuid::Uuid::new_v4().to_string();
+    app.cli_source = None;
+    messages[0].content = "searchable App prompt".into();
+    let dir = crate::paths::session_dir(&app.id);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("messages.json"),
+        serde_json::to_vec(&messages).unwrap(),
+    )
+    .unwrap();
+    store::save_sessions_index(&[source.clone(), app.clone()]).unwrap();
+    let hits = crate::session_content_search::search_sessions("searchable", 10);
+    assert_eq!(hits.len(), 2);
+    assert!(hits
+        .iter()
+        .any(|hit| hit.id == app.id && hit.snippet == "searchable App prompt"));
+    assert!(hits
+        .iter()
+        .any(|hit| hit.id == source.id && hit.snippet == "searchable terminal prompt"));
+    assert!(!crate::paths::session_dir(&source.id)
+        .join("messages.json")
+        .exists());
+    app.archived = true;
+    store::save_sessions_index(&[source, app]).unwrap();
+    assert_eq!(
+        crate::session_content_search::search_sessions("searchable", 10).len(),
+        1
+    );
+}
+
+#[test]
+fn oversized_summaries_remain_excluded_without_reading_histories() {
+    let fixture = Fixture::new();
+    let home = fixture.home("home");
+    let dir = session(&home, "cwd", "id");
+    let summary = serde_json::json!({ "generated_title": "x".repeat(SUMMARY_LIMIT as usize) });
+    fs::write(
+        dir.join("summary.json"),
+        serde_json::to_vec(&summary).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("chat_history.jsonl"),
+        b"{\"role\":\"user\",\"content\":\"must not unhide\"}\n",
+    )
+    .unwrap();
+    let found = discover(&[home]);
+    assert!(legacy::summaries(&found, &[]).is_empty());
 }
 
 #[test]

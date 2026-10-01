@@ -873,8 +873,8 @@ export function isDisplayableAttachmentPath(path: string): boolean {
 }
 
 /**
- * Attachments still shown below the message: non-media, or media that is
- * not already referenced (and thus inlined) in the message body.
+ * Only images and videos are inlined by MarkdownChat; keep other attachments
+ * even when referenced in the message body.
  */
 export function filterAttachmentsNotInlined(
   content: string,
@@ -890,7 +890,7 @@ export function filterAttachmentsNotInlined(
   const out = attachments.filter((a) => {
     // Hide unopenable false extracts (paperclip that cannot preview).
     if (!isDisplayableAttachmentPath(a.path)) return false;
-    if (a.isDir || isInlineAttachmentPath(a.path) || !isMediaPath(a.path)) return true;
+    if (a.isDir || isInlineAttachmentPath(a.path) || (!isImagePath(a.path) && !isVideoPath(a.path))) return true;
     const name = pathBasename(a.path);
     const norm = a.path.replace(/\\/g, "/");
     const rel = mediaTailFromPath(norm);

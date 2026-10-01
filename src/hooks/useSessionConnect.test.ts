@@ -50,6 +50,45 @@ describe("useSessionConnect", () => {
     expect(source.cliSource?.appOwned).toBe(false);
   });
 
+  it("keeps unknown ownership browse-only for implicit, forced, and retry connects but permits explicit send", async () => {
+    vi.spyOn(api, "sessionStop").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sessionConnect").mockResolvedValue({ ...IDLE_SNAPSHOT, sessionId: source.id, state: "ready" });
+    const host = createSessionConnectHost();
+    host.session = { ...IDLE_SNAPSHOT, sessionId: source.id, state: "connecting" };
+    host.viewingSessionIdRef.current = source.id;
+    host.setLocalError = vi.fn();
+    const hostRef = { current: host };
+    const { result } = renderHook(() => useSessionConnect({ hostRef, liveMapEnabled: false, viewedSessionId: source.id }));
+    await act(async () => {
+      expect(await result.current.ensureConnected()).toBeNull();
+      expect(await result.current.ensureConnected(true)).toBeNull();
+      result.current.retryAgentConnect();
+    });
+    expect(api.sessionConnect).not.toHaveBeenCalled();
+    expect(api.sessionStop).not.toHaveBeenCalled();
+    expect(host.setLocalError).not.toHaveBeenCalled();
+    await act(async () => {
+      expect(await result.current.ensureConnected({ sessionId: source.id, intent: "send" })).toBe(source.id);
+    });
+    expect(api.sessionConnect).toHaveBeenCalledExactlyOnceWith({ projectPath: undefined, sessionId: source.id, mode: "agent", sshAlias: null });
+  });
+
+  it("allows retry after the catalog identifies an App-owned session", async () => {
+    vi.spyOn(api, "sessionStop").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "sessionConnect").mockResolvedValue({ ...IDLE_SNAPSHOT, sessionId: source.id, state: "ready" });
+    const host = createSessionConnectHost();
+    host.session = { ...IDLE_SNAPSHOT, sessionId: source.id, state: "connecting" };
+    host.viewingSessionIdRef.current = source.id;
+    const hostRef = { current: host };
+    const { result } = renderHook(() => useSessionConnect({ hostRef, liveMapEnabled: false, viewedSessionId: source.id }));
+    await act(async () => { result.current.retryAgentConnect(); });
+    expect(api.sessionConnect).not.toHaveBeenCalled();
+    host.findRow = () => ({ ...source, cliSource: { ...source.cliSource!, appOwned: true } });
+    await act(async () => { result.current.retryAgentConnect(); });
+    expect(api.sessionStop).toHaveBeenCalledExactlyOnceWith(source.id);
+    expect(api.sessionConnect).toHaveBeenCalledExactlyOnceWith({ projectPath: undefined, sessionId: source.id, mode: "agent", sshAlias: null });
+  });
+
   it.each(LOCALES)("has localized external deletion copy for %s", (locale) => {
     const tr = createT(locale);
     const own = { ...source, cliSource: { ...source.cliSource!, appOwned: true } };
