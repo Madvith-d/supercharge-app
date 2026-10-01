@@ -37,6 +37,7 @@ pub fn plugin_api_bridge_status(
     crate::managed_plugin_bridge::status(&app_session_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn plugin_api_bridge_apply(
     mgr: State<'_, Arc<SessionManager>>,

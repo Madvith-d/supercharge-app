@@ -15,10 +15,13 @@ See `docs/llm-wiki/release.md`.
 
 ## [0.2.46] - 2026-10-01
 
-> **Highlight:** Startup does less filesystem work, and window geometry saves run in the background.
+> **Highlight:** Manage reviewed plugin tools for the selected chat with safer startup and updates.
+>
+> **中文 · 亮点：** 可为选中的聊天管理已审核的插件工具，启动和更新也更稳妥。
 
 ### Added
 - Startup logs now help identify slow initialization steps.
+- Reviewed plugin tools can be managed and applied to the selected local Linux chat. Installation requires explicit trust and enablement, and readiness requires a consented tool call.
 
 ### Changed
 - Settings reads and startup avoid repeated filesystem setup and project-folder scans.
@@ -28,6 +31,19 @@ See `docs/llm-wiki/release.md`.
 ### Fixed
 - Windows minimize and maximize controls handle rapid clicks more reliably. Window-size updates no longer interrupt minimize or maximize transitions.
 - Remote projects no longer grant access to matching local folders.
+
+**中文 · 新增**
+- 启动日志可帮助定位初始化速度较慢的步骤。
+- 可为选中的本地 Linux 聊天管理和应用已审核的插件工具。安装后需明确授权并启用，只有经同意的工具调用成功后才会显示就绪。
+
+**中文 · 变更**
+- 设置读取和启动时减少重复的文件系统初始化与项目文件夹扫描。
+- 过期的外观文件在后台清理，不影响正在导入的文件。
+- 窗口大小和位置在后台保存。
+
+**中文 · 修复**
+- Windows 最小化和最大化按钮在快速点击时更可靠。调整窗口大小不再打断最小化或最大化过程。
+- 远程项目不再授予对路径相同的本地文件夹的访问权限。
 
 ## [0.2.45] - 2026-10-01
 
