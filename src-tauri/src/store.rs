@@ -4468,7 +4468,11 @@ mod tests {
 
         src.cli_source = Some(crate::cli_history::CliSessionSource {
             source_home: "/fixture".into(),
-            relative_dir: "sessions/workspace/agent-parent".into(),
+            relative_dir: PathBuf::from("sessions")
+                .join("workspace")
+                .join("agent-parent")
+                .to_string_lossy()
+                .into_owned(),
             agent_session_id: "agent-parent".into(),
             cwd: None,
             title: None,

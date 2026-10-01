@@ -819,7 +819,33 @@ fn publish_no_replace(source: &Path, target: &Path) -> std::io::Result<()> {
     }
     #[cfg(windows)]
     {
-        fs::rename(source, target)
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVE_FILE_FLAGS};
+
+        fn wide_path(path: &Path) -> std::io::Result<Vec<u16>> {
+            let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+            if wide.contains(&0) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Path contains a null character",
+                ));
+            }
+            wide.push(0);
+            Ok(wide)
+        }
+
+        let source = wide_path(source)?;
+        let target = wide_path(target)?;
+        // std::fs::rename allows replacement; native publication must never replace.
+        unsafe {
+            MoveFileExW(
+                PCWSTR(source.as_ptr()),
+                PCWSTR(target.as_ptr()),
+                MOVE_FILE_FLAGS(0),
+            )
+        }
+        .map_err(|_| std::io::Error::last_os_error())
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
