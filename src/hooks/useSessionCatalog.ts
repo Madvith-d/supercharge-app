@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "@/lib/api";
+import { useCliHistorySync } from "./useCliHistorySync";
 import {
   mapSessionListRow,
   type SessionRow,
@@ -145,11 +146,26 @@ export function useSessionCatalog(opts: {
     });
   }, []);
 
+  const mountedRef = useRef(false);
+  const refreshGenerationRef = useRef(0);
+  const [listening, setListening] = useState(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      refreshGenerationRef.current += 1;
+    };
+  }, []);
+
   const refreshSessions = useCallback(async () => {
+    if (!mountedRef.current) return;
+    const generation = ++refreshGenerationRef.current;
     try {
       const list = await api.sessionsList();
+      if (!mountedRef.current || generation !== refreshGenerationRef.current) return;
       setSessions(list.map((s) => mapSessionListRow(s)));
-      void api.trayRefresh();
+      void api.trayRefresh().catch(() => {});
     } catch {
       /* ignore */
     }
@@ -162,28 +178,42 @@ export function useSessionCatalog(opts: {
     if (!api.hasHost()) return;
     let cancelled = false;
     let timer: number | null = null;
+    let retryTimer: number | undefined;
     let unlisten: (() => void) | undefined;
-    void (async () => {
-      const un = await api.listen<{ reason?: string; sessionId?: string }>(
-        "sessions://changed",
-        () => {
-          if (cancelled) return;
-          if (timer !== null) window.clearTimeout(timer);
-          timer = window.setTimeout(() => {
-            timer = null;
-            void refreshSessionsRef.current();
-          }, 150);
-        },
-      );
-      if (cancelled) un();
-      else unlisten = un;
-    })();
+    const subscribe = async () => {
+      try {
+        const un = await api.listen<{ reason?: string; sessionId?: string }>(
+          "sessions://changed",
+          () => {
+            if (cancelled) return;
+            refreshGenerationRef.current += 1;
+            if (timer !== null) window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+              timer = null;
+              void refreshSessionsRef.current();
+            }, 150);
+          },
+        );
+        if (cancelled) un();
+        else {
+          unlisten = un;
+          setListening(true);
+        }
+      } catch {
+        if (!cancelled) retryTimer = window.setTimeout(() => void subscribe(), 1_000);
+      }
+    };
+    void subscribe();
     return () => {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
+      window.clearTimeout(retryTimer);
       unlisten?.();
     };
   }, []);
+
+  // Register the catalog listener before inventory can emit its first change.
+  useCliHistorySync(listening);
 
   return {
     sessions,

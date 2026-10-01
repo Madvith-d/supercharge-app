@@ -101,6 +101,7 @@ fn sample_live_for_empty_run(body: &str, thought: &str, tools: u32, mode: &str) 
             project_id: None,
             title: "Test".into(),
             agent_session_id: None,
+            cli_source: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             model_id: None,

@@ -9,7 +9,7 @@ Credit: original desktop workbench by [RongleCat](https://github.com/RongleCat).
 ## Участники исходного проекта
 
 <!-- CONTRIBUTORS:START -->
-Спасибо всем, кто внёс вклад в Grok App. Все участники GitHub — люди (по числу коммитов, обновлено 2026-10-01).
+Спасибо всем, кто внёс вклад в Grok App. Все участники GitHub — люди (по числу коммитов, обновлено 2026-10-02).
 
 <p align="center">
   <a href="https://github.com/RongleCat" title="RongleCat"><img src="https://github.com/RongleCat.png?size=96" width="72" height="72" alt="RongleCat" style="border-radius:50%" /></a>

@@ -279,9 +279,16 @@ pub fn load_agent_plan_snapshot(session_id: &str) -> AgentPlanSnapshot {
     let Some(meta) = meta else {
         return out;
     };
-    let agent_id = match meta.agent_session_id.as_ref() {
-        Some(a) if !a.is_empty() => a.clone(),
-        _ => return out,
+    let cli_dir = crate::cli_history_continue::history_directory(&meta);
+    let agent_id = meta.agent_session_id.clone().or_else(|| {
+        cli_dir
+            .as_ref()
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+    });
+    let Some(agent_id) = agent_id.filter(|id| !id.is_empty()) else {
+        return out;
     };
     out.agent_session_id = Some(agent_id.clone());
 
@@ -294,11 +301,16 @@ pub fn load_agent_plan_snapshot(session_id: &str) -> AgentPlanSnapshot {
             .map(|p| p.path.clone())
     });
 
-    let Some(dir) = find_agent_session_dir(
-        &agent_id,
-        project_path.as_deref(),
-        &settings.session_data_mode,
-    ) else {
+    let dir = if meta.cli_source.is_some() {
+        cli_dir
+    } else {
+        find_agent_session_dir(
+            &agent_id,
+            project_path.as_deref(),
+            &settings.session_data_mode,
+        )
+    };
+    let Some(dir) = dir else {
         return out;
     };
     out.found = true;

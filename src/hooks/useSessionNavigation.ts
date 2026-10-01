@@ -14,6 +14,7 @@ import {
 } from "react";
 import * as api from "@/lib/api";
 import type { Project, SessionRow } from "@/lib/app/sidebarModels";
+import { isExternalCliSession } from "@/lib/sessionCliSource";
 import {
   hydrateSessionJournal,
   type HydrateSessionJournalResult,
@@ -304,7 +305,15 @@ export function useSessionNavigation(opts: {
   const openSession = useCallback(
     async (s: SessionRow, project?: Project | null) => {
       const host = hostRef.current;
-      const proj = host.catalog.resolveProject(s, project);
+      const proj = host.catalog.resolveProject(host.catalog.findRow(s.id) ?? s, project);
+      const readOnlyHistory = () => {
+        const row = hostRef.current.catalog.findRow(s.id);
+        return !row || isExternalCliSession(row);
+      };
+      const sourceAuthoritative = () =>
+        isExternalCliSession(hostRef.current.catalog.findRow(s.id)) &&
+        !hostRef.current.connect.isSendInFlight(s.id) &&
+        !hostRef.current.connect.isConnecting(s.id);
       host.chrome.goToChat();
       host.chrome.closePhoneDrawerIfNeeded();
 
@@ -367,6 +376,7 @@ export function useSessionNavigation(opts: {
           sessionId: s.id,
           sessionScheduled: !!s.scheduled,
           stillThisOpen,
+          sourceAuthoritative,
           liveState: resumeStateForSession(
             s.id,
             sessionShellStore.getLiveHost(),
@@ -376,22 +386,24 @@ export function useSessionNavigation(opts: {
       } finally {
         // Always clear matching open claim — timeout/failure must not leave
         // openingSessionIdRef stuck and block viewingSessionId sync.
-        if (openingSessionIdRef.current === s.id) {
+        if (openSessionGenRef.current === openGen && openingSessionIdRef.current === s.id) {
           openingSessionIdRef.current = null;
         }
       }
       if (hydrated.status === "aborted") {
-        return;
+        // A newer source refresh owns the transcript, not navigation context.
+        if (!stillThisOpen() || !sourceAuthoritative()) return;
+      } else {
+        hostRef.current.hydrate.applyOpenResult(s.id, hydrated);
       }
-      hostRef.current.hydrate.applyOpenResult(s.id, hydrated);
-      if (hydrated.status === "applied" && api.isTauri()) {
+      if (hydrated.status === "applied" && api.isTauri() && !readOnlyHistory()) {
         if (deferredReconcileTimerRef.current) {
           clearTimeout(deferredReconcileTimerRef.current);
         }
         deferredReconcileTimerRef.current = setTimeout(() => {
           deferredReconcileTimerRef.current = null;
           void (async () => {
-            if (!stillThisOpen()) return;
+            if (!stillThisOpen() || readOnlyHistory()) return;
             const recon = await hydrateSessionJournal({
               sessionId: s.id,
               sessionScheduled: !!s.scheduled,
@@ -430,6 +442,9 @@ export function useSessionNavigation(opts: {
         hostAfter.catalog.rememberLastSession(s.id, proj?.id ?? null);
       }
 
+      if (readOnlyHistory()) {
+        return;
+      }
       if (shouldSkipWarmConnect(hostAfter.connect.isSecondaryWindow())) {
         return;
       }
@@ -466,6 +481,7 @@ export function useSessionNavigation(opts: {
           warmConnectTimerRef.current = null;
           const c = hostRef.current.connect;
           if (!stillThisOpen()) return;
+          if (readOnlyHistory()) return;
           if (c.isSendInFlight(warmId) || c.isConnecting(warmId)) return;
           if (shouldSkipWarmConnect(c.isSecondaryWindow())) return;
           if (!c.claim(warmId)) return;

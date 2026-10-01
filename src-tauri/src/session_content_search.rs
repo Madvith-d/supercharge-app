@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::session_dir;
-use crate::store::{self, ChatMessageStored, SessionMeta};
+use crate::store::{self, SessionMeta};
 
 /// Max sessions to open on disk (most recently updated first).
 const MAX_SESSIONS_SCAN: usize = 200;
@@ -171,16 +171,36 @@ pub fn search_sessions(query: &str, limit: usize) -> Vec<SessionContentHit> {
 
 fn scan_session(meta: &SessionMeta, query: &str) -> Option<SessionContentHit> {
     let path = session_dir(&meta.id).join("messages.json");
-    if !path.is_file() {
+    if path.is_file() {
+        if file_too_large(&path) {
+            return None;
+        }
+    } else if meta.cli_source.is_some() {
+        // Bound cold projection work as well as reads of an existing cache.
+        let cache = session_dir(&meta.id).join("cli_transcript.json");
+        if cache.is_file() && file_too_large(&cache) {
+            return None;
+        }
+        if let Some(dir) = crate::cli_history_continue::history_directory(meta) {
+            let updates = dir.join("updates.jsonl");
+            let transcript = if updates.exists() {
+                updates
+            } else {
+                dir.join("chat_history.jsonl")
+            };
+            if transcript.is_file() && file_too_large(&transcript) {
+                return None;
+            }
+        }
+    } else {
         return None;
     }
-    if file_too_large(&path) {
-        return None;
-    }
-    let messages: Vec<ChatMessageStored> = match fs::read_to_string(&path) {
-        Ok(s) if s.trim().is_empty() => return None,
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => return None,
+    let messages = if meta.cli_source.is_some() {
+        crate::cli_history::read_messages_with_meta(meta)
+            .ok()?
+            .unwrap_or_else(|| store::load_messages(&meta.id))
+    } else {
+        store::load_messages(&meta.id)
     };
     let iter = messages
         .iter()
@@ -259,6 +279,46 @@ mod tests {
         let snip = make_snippet(content, idx, 6);
         assert!(snip.contains("TARGET"));
         assert!(!snip.is_empty());
+    }
+
+    #[test]
+    fn normal_app_scan_does_not_reload_the_session_index() {
+        struct TestHome {
+            root: std::path::PathBuf,
+            previous: Option<std::ffi::OsString>,
+        }
+        impl Drop for TestHome {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(value) => std::env::set_var("SUPERCHARGE_APP_HOME", value),
+                    None => std::env::remove_var("SUPERCHARGE_APP_HOME"),
+                }
+                let _ = fs::remove_dir_all(&self.root);
+            }
+        }
+        let _lock = crate::paths::APP_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = TestHome {
+            root: std::env::temp_dir().join(format!("content-search-{}", uuid::Uuid::new_v4())),
+            previous: std::env::var_os("SUPERCHARGE_APP_HOME"),
+        };
+        std::env::set_var("SUPERCHARGE_APP_HOME", &home.root);
+        let meta = store::create_session(None, Some("App conversation".into()), false).unwrap();
+        let message = serde_json::json!([{
+            "id": "message", "role": "user", "content": "searchable App prompt",
+            "createdAt": "2024-02-03T00:00:00Z"
+        }]);
+        fs::write(
+            session_dir(&meta.id).join("messages.json"),
+            message.to_string(),
+        )
+        .unwrap();
+        let index = home.root.join("sessions_index.json");
+        fs::write(&index, b"invalid index").unwrap();
+        let hit = scan_session(&meta, "searchable").unwrap();
+        assert_eq!(hit.snippet, "searchable App prompt");
+        assert_eq!(fs::read(index).unwrap(), b"invalid index");
     }
 
     #[test]

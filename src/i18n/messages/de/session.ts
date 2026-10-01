@@ -111,6 +111,8 @@ export const deSession = {
   "session.move.ghostMany": "{n} Chats",
   "session.deleteTitle": "Chat löschen",
   "session.deleteConfirm": "„{name}“ dauerhaft löschen? Das lässt sich nicht rückgängig machen.",
+  "session.deleteExternalConfirm": "„{name}“ aus der App entfernen? Der ursprüngliche CLI-Verlauf wird nicht gelöscht.",
+  "session.deleteExternalNote": "Externe CLI-Verläufe werden nur aus der App entfernt. Die Originaldateien werden nicht gelöscht.",
   "session.deleteManyTitle": "Chats löschen",
   "session.deleteManyConfirm": "{n} Chats dauerhaft löschen? Das lässt sich nicht rückgängig machen.",
   "session.menu": "Sitzungsmenü",

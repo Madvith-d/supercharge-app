@@ -13,6 +13,26 @@ See `docs/llm-wiki/release.md`.
 
 ## [Unreleased]
 
+## [0.2.47] - 2026-10-02
+
+> **Highlight:** CLI conversations appear automatically alongside App chats, including with custom providers.
+>
+> **中文 · 亮点：** CLI 对话自动显示在应用聊天列表中，自定义服务商也同样支持。
+
+### Added
+- CLI conversations appear automatically, even when a custom provider is selected. Opening history keeps terminal conversations intact, and continuing creates a separate App copy.
+
+### Fixed
+- Rewind and partial forks now commit the intended conversation boundary in the current CLI.
+- Continuing CLI history safely preserves existing conversation directories on Windows.
+
+**中文 · 新增**
+- CLI 对话自动显示，选择自定义服务商时也不例外。查看历史不会修改终端对话，继续聊天会创建独立的应用副本。
+
+**中文 · 修复**
+- 回退和部分分支现在会在当前 CLI 中实际提交预期的对话截断位置。
+- 在 Windows 上继续 CLI 历史时，会安全保留已有的对话目录。
+
 ## [0.2.46] - 2026-10-01
 
 > **Highlight:** Manage reviewed plugin tools for the selected chat with safer startup and updates.

@@ -191,6 +191,9 @@ fn resolve_agent_dir(session_id: &str) -> Option<std::path::PathBuf> {
     let meta = store::load_sessions_index()
         .into_iter()
         .find(|s| s.id == session_id)?;
+    if meta.cli_source.is_some() {
+        return crate::cli_history_continue::history_directory(&meta);
+    }
     let agent_id = meta.agent_session_id.as_deref().filter(|s| !s.is_empty())?;
     let mode = store::load_settings().session_data_mode;
     let cwd_hint = meta.project_id.as_deref().and_then(|pid| {

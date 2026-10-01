@@ -30,6 +30,14 @@ describe("isViewableSrc", () => {
 });
 
 describe("normalizeMediaRef / ChatCut refs", () => {
+  it.each([
+    "DATA:IMAGE/PNG;base64,AA==",
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+  ])("passes inline images through without filesystem normalization: %s", (src) => {
+    expect(normalizeMediaRef(src)).toBe(src);
+    expect(resolveImageSrcSync(src)).toBe(src);
+  });
+
   it("upgrades protocol-relative S3 URLs to https", () => {
     const raw =
       "//chatcut-production-mainbucketbucket-oxvbnfsx.s3.us-east-1.amazonaws.com/users/u/projects/p/assets/image/id/%E7%AC%AC2%E9%9B%86-thumbnail.jpg";

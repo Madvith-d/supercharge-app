@@ -1572,6 +1572,7 @@ mod stream_emit_lock_tests {
                 project_id: None,
                 title: "Emit".into(),
                 agent_session_id: Some("agent-1".into()),
+                cli_source: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 model_id: None,

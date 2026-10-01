@@ -111,6 +111,8 @@ export const koSession = {
   "session.move.ghostMany": "대화 {n}개",
   "session.deleteTitle": "대화 삭제",
   "session.deleteConfirm": "“{name}”을(를) 영구 삭제할까요? 이 작업은 되돌릴 수 없습니다.",
+  "session.deleteExternalConfirm": "앱에서 “{name}”을(를) 제거할까요? 원본 CLI 기록은 삭제되지 않습니다.",
+  "session.deleteExternalNote": "외부 CLI 기록은 앱에서만 제거됩니다. 원본 파일은 삭제되지 않습니다.",
   "session.deleteManyTitle": "대화 삭제",
   "session.deleteManyConfirm": "대화 {n}개를 영구 삭제할까요? 되돌릴 수 없습니다.",
   "session.menu": "세션 메뉴",

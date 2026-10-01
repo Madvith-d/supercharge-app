@@ -1,7 +1,7 @@
 {
   "name": "supercharge-app",
   "private": true,
-  "version": "0.2.46",
+  "version": "0.2.47",
   "description": "Supercharge desktop workbench for local coding agents",
   "author": "Supercharge contributors",
   "license": "MIT",

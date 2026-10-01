@@ -950,7 +950,17 @@ fn session_cli_export_blocking(
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("session not found: {session_id}"))?;
 
-    let agent_sid = live_agent_session_id
+    let cli_dir = if meta.cli_source.is_some() {
+        Some(
+            crate::cli_history_continue::history_directory(&meta)
+                .ok_or("CLI history state is missing or ambiguous")?,
+        )
+    } else {
+        None
+    };
+    let agent_sid = cli_dir.as_ref()
+        .and_then(|dir| dir.file_name()).and_then(|name| name.to_str())
+        .or(live_agent_session_id)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -971,8 +981,15 @@ fn session_cli_export_blocking(
     let Some(cli_path) = probe.path.filter(|_| probe.found) else {
         return Err("Supercharge CLI not found".into());
     };
-    let supercharge_home =
-        crate::paths::resolve_agent_supercharge_home(&settings.session_data_mode);
+    let supercharge_home = cli_dir
+        .as_ref()
+        .and_then(|dir| dir.parent())
+        .and_then(|dir| dir.parent())
+        .and_then(|dir| dir.parent())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| {
+            crate::paths::resolve_agent_supercharge_home(&settings.session_data_mode)
+        });
 
     let short: String = agent_sid.chars().take(8).collect();
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
@@ -1147,7 +1164,17 @@ fn session_trace_export_blocking(
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("session not found: {session_id}"))?;
 
-    let agent_sid = live_agent_session_id
+    let cli_dir = if meta.cli_source.is_some() {
+        Some(
+            crate::cli_history_continue::history_directory(&meta)
+                .ok_or("CLI history state is missing or ambiguous")?,
+        )
+    } else {
+        None
+    };
+    let agent_sid = cli_dir.as_ref()
+        .and_then(|dir| dir.file_name()).and_then(|name| name.to_str())
+        .or(live_agent_session_id)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -1168,8 +1195,15 @@ fn session_trace_export_blocking(
     let Some(cli_path) = probe.path.filter(|_| probe.found) else {
         return Err("Supercharge CLI not found".into());
     };
-    let supercharge_home =
-        crate::paths::resolve_agent_supercharge_home(&settings.session_data_mode);
+    let supercharge_home = cli_dir
+        .as_ref()
+        .and_then(|dir| dir.parent())
+        .and_then(|dir| dir.parent())
+        .and_then(|dir| dir.parent())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| {
+            crate::paths::resolve_agent_supercharge_home(&settings.session_data_mode)
+        });
 
     let short: String = agent_sid.chars().take(8).collect();
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");

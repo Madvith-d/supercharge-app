@@ -289,6 +289,7 @@ mod tests {
             project_id: Some(pid.into()),
             title: title.into(),
             agent_session_id: agent.map(|s| s.into()),
+            cli_source: None,
             created_at: now,
             updated_at: now,
             model_id: None,
