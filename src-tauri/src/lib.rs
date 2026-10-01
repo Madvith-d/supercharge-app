@@ -311,9 +311,16 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     linux_webkit::maybe_reexec_for_system_webkit();
 
+    let startup_started = std::time::Instant::now();
+    let process_started = std::time::SystemTime::now();
     let _ = paths::ensure_app_dirs();
+    let directory_init_elapsed = startup_started.elapsed();
 
     logging::init();
+    tracing::info!(
+        elapsed_ms = directory_init_elapsed.as_millis(),
+        "startup directory initialization finished"
+    );
 
     #[cfg(target_os = "linux")]
     {
@@ -321,7 +328,10 @@ pub fn run() {
         linux_webkit::log_system_webkit_choice();
     }
 
-    crate::host_runtime::on_process_start();
+    {
+        let _phase = window_diagnostics::StartupPhase::start("runtime recovery");
+        crate::host_runtime::on_process_start();
+    }
     crate::win_crash::install();
 
     let context = tauri::generate_context!();
@@ -418,6 +428,7 @@ pub fn run() {
         .plugin({
             use tauri_plugin_window_state::{Builder as WindowStateBuilder, StateFlags};
             WindowStateBuilder::new()
+                .with_background_save(std::time::Duration::from_millis(750))
                 .with_state_flags(
                     StateFlags::SIZE
                         | StateFlags::POSITION
@@ -537,12 +548,11 @@ pub fn run() {
                         // Always prevent_close so FE can confirm when busy — but arm a
                         // host failsafe so a wedged WebView cannot trap the process.
                         api.prevent_close();
-                        // Flush latest size before quit-confirm so a kill during the
-                        // dialog still restores the resized frame next launch.
-                        persist_main_window_state(window.app_handle());
                         let app = window.app_handle().clone();
-                        let _ = window.emit("app://close-requested", ());
                         crate::pending_quit::schedule_pending_quit(&app);
+                        // Capture before quit-confirm; disk persistence runs off the UI.
+                        persist_main_window_state(&app);
+                        let _ = window.emit("app://close-requested", ());
                     }
                 }
                 // Plugin keeps in-memory state on Resized/Moved but only writes disk
@@ -574,10 +584,13 @@ pub fn run() {
             }
         })
 
-        .setup(|app| {
-            let _timing = window_diagnostics::WindowOperation::start("startup setup");
+        .setup(move |app| {
+            let _timing = window_diagnostics::StartupPhase::start("window setup");
 
-            crate::path_scope::refresh_from_store();
+            {
+                let _phase = window_diagnostics::StartupPhase::start("trusted path initialization");
+                crate::path_scope::refresh_from_store();
+            }
 
             use tauri::Manager;
 
@@ -635,7 +648,10 @@ pub fn run() {
                 main_cfg.center = true;
             }
             // Concrete light|dark + locale for boot shell + window chrome.
-            let boot_settings = store::load_settings();
+            let boot_settings = {
+                let _phase = window_diagnostics::StartupPhase::start("boot settings");
+                store::load_settings()
+            };
             let boot_theme = resolve_boot_theme(&boot_settings.theme);
             let boot_locale = tray_i18n::Locale::parse(&boot_settings.locale);
             let boot_locale_tag = boot_locale.as_tag();
@@ -648,11 +664,12 @@ pub fn run() {
                 os_lang = boot_os_lang,
                 html_lang = boot_html_lang
             );
+            let window_build_phase = window_diagnostics::StartupPhase::start("webview construction");
             let window = tauri::WebviewWindowBuilder::from_config(app, &main_cfg)?
                 .visible(false)
                 .accept_first_mouse(true)
                 .initialization_script(&boot_theme_script)
-                .on_page_load(|window, payload| {
+                .on_page_load(move |window, payload| {
                     // Cold-launch first-click / first-key dead zone: the
                     // set_focus() right after show() occasionally loses the
                     // activation race, leaving a key window whose app is still
@@ -674,6 +691,7 @@ pub fn run() {
                     if REASSERTED.swap(true, Ordering::SeqCst) {
                         return;
                     }
+                    window_diagnostics::startup_milestone(startup_started, "main page loaded");
                     let app_active_at_load = ns_app_is_active();
                     tracing::info!(
                         focused_at_load = window.is_focused().unwrap_or(false),
@@ -739,6 +757,7 @@ pub fn run() {
                     }
                 })
                 .build()?;
+            drop(window_build_phase);
             #[cfg(debug_assertions)]
             {
                 if let Ok(icon) =
@@ -802,6 +821,7 @@ pub fn run() {
                 let w = window.clone();
                 let _ = window.run_on_main_thread(move || {
                     let _ = w.show();
+                    window_diagnostics::startup_milestone(startup_started, "main window show returned");
                     let _ = w.set_focus();
                     // Late OLE drop targets — must run after show (#1017).
                     #[cfg(windows)]
@@ -814,6 +834,7 @@ pub fn run() {
                 // Show immediately — do not block_on host services first (that
                 // freezes the main loop and delays WebView paint).
                 let _ = window.show();
+                window_diagnostics::startup_milestone(startup_started, "main window show returned");
                 let _ = window.set_focus();
                 // wry registers drag-drop during hidden create and often misses
                 // WebView2 child HWNDs → forbidden cursor (#1017 / tauri#14643).
@@ -1087,6 +1108,8 @@ pub fn run() {
                 }
             }
 
+            skin_staging::start_background_cleanup(paths::app_data_root(), process_started);
+            window_diagnostics::startup_milestone(startup_started, "window setup complete");
             Ok(())
 
         })
@@ -1238,7 +1261,7 @@ fn main_window_state_flags() -> tauri_plugin_window_state::StateFlags {
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
 }
 
-/// Immediately write main-window geometry to `.window-state.json`.
+/// Capture main-window geometry and enqueue an ordered background save.
 fn persist_main_window_state(app: &tauri::AppHandle) {
     let _timing = window_diagnostics::WindowOperation::start("save window geometry");
     use tauri_plugin_window_state::AppHandleExt;
@@ -1259,10 +1282,9 @@ fn schedule_persist_main_window_state(app: &tauri::AppHandle) {
         if GENERATION.load(Ordering::Relaxed) != gen {
             return;
         }
-        // macOS deadlock guard (#735): save_window_state holds the plugin's
-        // cache mutex while querying window geometry. Off the main thread the
-        // getters block on the main thread, which may itself be waiting on
-        // that mutex inside the plugin's Resized handler. Hop back first.
+        // Recheck on the capture thread: another move may arrive after dispatch.
+        // The plugin captures native geometry here and sends only owned state
+        // to its disk worker (macOS cache/main-thread deadlock guard, #735).
         let app2 = app.clone();
         let _ = app.run_on_main_thread(move || {
             if GENERATION.load(Ordering::Relaxed) == gen {

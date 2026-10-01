@@ -7,7 +7,7 @@
       "protocolVersion": 1,
       "clientInfo": {
         "name": "supercharge-desktop",
-        "version": "0.2.45"
+        "version": "0.2.46"
       },
       "clientCapabilities": {
         "_meta": {
@@ -18,7 +18,7 @@
       "_meta": {
         "clientType": "supercharge-desktop",
         "clientIdentifier": "supercharge-desktop",
-        "clientVersion": "0.2.45"
+        "clientVersion": "0.2.46"
       }
     }
   },

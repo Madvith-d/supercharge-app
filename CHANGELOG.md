@@ -13,6 +13,21 @@ See `docs/llm-wiki/release.md`.
 
 ## [Unreleased]
 
+## [0.2.46] - 2026-10-01
+
+> **Highlight:** Startup does less filesystem work, and window geometry saves run in the background.
+
+### Added
+- Startup logs now help identify slow initialization steps.
+
+### Changed
+- Settings reads and startup avoid repeated filesystem setup and project-folder scans.
+- Expired appearance files are cleaned up in the background without touching active imports.
+- Window size and position are saved in the background.
+
+### Fixed
+- Remote projects no longer grant access to matching local folders.
+
 ## [0.2.45] - 2026-10-01
 
 > **Highlight:** Windows taskbar and tray updates no longer block window controls.

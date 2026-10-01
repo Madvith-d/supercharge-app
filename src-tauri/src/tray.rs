@@ -22,7 +22,7 @@ const TRAY_ID: &str = "grok-main-tray";
 pub fn build_menu(app: &AppHandle) -> Result<Menu<Wry>, tauri::Error> {
     let tr: &TrayStrings = tray_i18n::t();
     let sessions = store::load_sessions_index();
-    let projects = store::load_projects();
+    let projects = store::load_projects_metadata();
     let project_name = |id: &Option<String>| -> String {
         id.as_ref()
             .and_then(|pid| projects.iter().find(|p| &p.id == pid))
@@ -230,9 +230,9 @@ fn hide_to_tray_inner(app: &AppHandle, hide_dock: bool) {
     let _timing = crate::window_diagnostics::WindowOperation::start("hide to tray");
     #[cfg(not(target_os = "macos"))]
     let _ = hide_dock;
-    // Persist geometry before hide so force-kill while tray-resident still restores
-    // the last size/position on next launch (plugin also saves on process Exit;
-    // resize is additionally debounced to disk from lib.rs window events).
+    // Capture before hide, including when called off-main. The opted-in plugin
+    // returns after capture/enqueue; its ordered worker persists without blocking
+    // hide on disk I/O. Exit drains that same writer for a bounded interval.
     {
         let _timing =
             crate::window_diagnostics::WindowOperation::start("save geometry before hide");

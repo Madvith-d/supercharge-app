@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::paths::{
-    automations_file, ensure_app_dirs, projects_file, session_dir, sessions_index_file,
-    settings_file,
+    automations_file, ensure_app_dirs, ensure_app_dirs_initialized, projects_file, session_dir,
+    sessions_index_file, settings_file,
 };
 
 /// Where composer model / effort / mode / permission choices are remembered.
@@ -128,6 +128,17 @@ impl Project {
     /// `path` lives on this OpenSSH Host — never a local `is_dir` check.
     pub fn is_ssh_remote(&self) -> bool {
         ssh_alias_of(self).is_some()
+    }
+
+    /// Fail closed on remote metadata before any local filesystem probe.
+    pub(crate) fn is_trusted_local(&self) -> bool {
+        self.trusted
+            && !self.is_legacy_general()
+            && !self
+                .ssh_alias
+                .as_deref()
+                .is_some_and(|alias| !alias.is_empty())
+            && infer_ssh_alias_from_name(&self.name, &self.path).is_none()
     }
 }
 
@@ -1035,7 +1046,12 @@ pub(crate) fn read_json_recover<T: for<'de> Deserialize<'de> + Default>(path: &P
                 );
                 let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
                 let bak = path.with_extension(format!("corrupt-{stamp}.json"));
-                let _ = fs::rename(path, &bak);
+                if path == &projects_file() {
+                    let _ =
+                        crate::path_scope::with_project_store_mutation(|| fs::rename(path, &bak));
+                } else {
+                    let _ = fs::rename(path, &bak);
+                }
                 if let Ok(mut g) = LAST_STORE_QUARANTINE.lock() {
                     *g = Some(bak.display().to_string());
                 }
@@ -1059,7 +1075,7 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
 }
 
 pub fn load_settings() -> AppSettings {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let mut s: AppSettings = read_json(&settings_file());
     // Compatibility: `use` was an effective network decision label, never a
     // persisted settings mode. Some local snapshots nevertheless contain it.
@@ -1256,7 +1272,7 @@ fn clear_legacy_grok_model_rows() {
         }
     }
     if changed {
-        if let Err(error) = write_json(&projects_file(), &projects) {
+        if let Err(error) = save_projects(&projects) {
             tracing::warn!("model row migration: projects: {error}");
         }
     }
@@ -1439,8 +1455,23 @@ pub fn reorder_projects_by_ids(list: &[Project], ordered_ids: &[String]) -> Vec<
     next
 }
 
+/// Read sidebar metadata without initialization, path probes, repair, or writes.
+/// Invalid JSON stays untouched for the validated reader to recover later.
+pub fn load_projects_metadata() -> Vec<Project> {
+    let mut list: Vec<Project> = read_json(&projects_file());
+    list.retain(|p| !p.is_legacy_general());
+    apply_project_pin_partition(&mut list);
+    list
+}
+
+/// Scope selection must not trigger settings migrations that validate projects.
+pub(crate) fn load_path_scope_session_data_mode() -> String {
+    let settings: AppSettings = read_json(&settings_file());
+    settings.session_data_mode
+}
+
 pub fn load_projects() -> Vec<Project> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let _ = ensure_general_workspace_dir();
     let mut list: Vec<Project> = read_json_recover(&projects_file());
     // One-shot migration: drop the temporary system:general project row and
@@ -1451,8 +1482,7 @@ pub fn load_projects() -> Vec<Project> {
     // Pin group first; keep manual order within each group (no last_opened sort).
     apply_project_pin_partition(&mut list);
     if dirty {
-        // Persist repaired ssh_alias / merged duplicates. Nested load via
-        // path_scope is a no-op once the file already has the alias.
+        // Persist repaired ssh_alias / merged duplicates.
         if let Err(e) = save_projects(&list) {
             tracing::warn!("repair ssh project rows: {e}");
         }
@@ -1463,7 +1493,7 @@ pub fn load_projects() -> Vec<Project> {
 /// Ensure `{app_data}/workspaces/general` exists (orphan chat default cwd).
 /// Not registered as a sidebar project.
 pub fn ensure_general_workspace_dir() -> Result<std::path::PathBuf, String> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let dir = crate::paths::general_workspace_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create general workspace: {e}"))?;
     Ok(dir)
@@ -1486,8 +1516,7 @@ fn migrate_legacy_general_project(list: &mut Vec<Project>) {
         return;
     }
     list.retain(|p| !p.is_legacy_general());
-    // Raw write: avoid save_projects → path_scope → load_projects recursion.
-    let _ = write_json(&projects_file(), &list);
+    let _ = write_projects(list);
     rehome_general_sessions();
     crate::path_scope::refresh_from_store();
 }
@@ -1503,8 +1532,12 @@ fn rehome_general_sessions() {
     });
 }
 
+fn write_projects(list: &[Project]) -> Result<(), String> {
+    crate::path_scope::with_project_store_mutation(|| write_json(&projects_file(), &list))
+}
+
 pub fn save_projects(list: &[Project]) -> Result<(), String> {
-    write_json(&projects_file(), &list)?;
+    write_projects(list)?;
     crate::path_scope::refresh_from_store();
     Ok(())
 }
@@ -1915,7 +1948,7 @@ pub fn sort_sessions_by_pin_then_updated(list: &mut [SessionMeta]) {
 }
 
 pub fn load_sessions_index() -> Vec<SessionMeta> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     // Recover from torn/corrupt index (shared CLI+App or crash mid-write).
     let mut list: Vec<SessionMeta> = read_json_recover(&sessions_index_file());
     sort_sessions_by_pin_then_updated(&mut list);
@@ -2903,7 +2936,7 @@ pub struct AutomationInput {
 }
 
 pub fn load_automations() -> Vec<Automation> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let mut list: Vec<Automation> = read_json(&automations_file());
     list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
     list
@@ -3436,6 +3469,10 @@ pub fn save_composer_prefs(
 
     Ok(resolve_composer_prefs(project_id, session_id))
 }
+
+#[cfg(test)]
+#[path = "store/project_metadata_tests.rs"]
+mod project_metadata_tests;
 
 #[cfg(test)]
 mod tests {

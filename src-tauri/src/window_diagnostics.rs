@@ -4,6 +4,39 @@ use std::time::{Duration, Instant};
 
 const SLOW_OPERATION: Duration = Duration::from_millis(250);
 
+pub(crate) struct StartupPhase {
+    name: &'static str,
+    started: Instant,
+}
+
+impl StartupPhase {
+    pub(crate) fn start(name: &'static str) -> Self {
+        tracing::info!(phase = name, "startup phase started");
+        Self {
+            name,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for StartupPhase {
+    fn drop(&mut self) {
+        tracing::info!(
+            phase = self.name,
+            elapsed_ms = self.started.elapsed().as_millis(),
+            "startup phase finished"
+        );
+    }
+}
+
+pub(crate) fn startup_milestone(started: Instant, milestone: &'static str) {
+    tracing::info!(
+        milestone,
+        elapsed_ms = started.elapsed().as_millis(),
+        "startup milestone"
+    );
+}
+
 pub(crate) struct WindowOperation {
     name: &'static str,
     started: Instant,

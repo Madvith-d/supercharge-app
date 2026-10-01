@@ -8,11 +8,88 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
-fn roots() -> &'static RwLock<Vec<PathBuf>> {
-    static R: OnceLock<RwLock<Vec<PathBuf>>> = OnceLock::new();
-    R.get_or_init(|| RwLock::new(Vec::new()))
+#[derive(Default)]
+struct ScopeRoots {
+    paths: Vec<PathBuf>,
+    store_generation: u64,
+    next_refresh: u64,
+    published_refresh: u64,
+}
+
+impl ScopeRoots {
+    fn begin_refresh(&mut self) -> (u64, u64) {
+        self.next_refresh += 1;
+        (self.store_generation, self.next_refresh)
+    }
+
+    fn publish(&mut self, generation: (u64, u64), next: Vec<PathBuf>) -> bool {
+        if generation.0 != self.store_generation {
+            return false;
+        }
+        if generation.1 > self.published_refresh {
+            self.paths = next;
+            self.published_refresh = generation.1;
+        }
+        true
+    }
+}
+
+fn roots() -> &'static RwLock<ScopeRoots> {
+    static R: OnceLock<RwLock<ScopeRoots>> = OnceLock::new();
+    R.get_or_init(|| RwLock::new(ScopeRoots::default()))
+}
+
+fn project_mutations() -> &'static Mutex<()> {
+    static GATE: Mutex<()> = Mutex::new(());
+    &GATE
+}
+
+/// Serialize project writes without holding the authorization lock during I/O.
+pub(crate) fn with_project_store_mutation<T>(mutation: impl FnOnce() -> T) -> T {
+    mutate_project_store(roots(), project_mutations(), mutation)
+}
+
+fn mutate_project_store<T>(
+    scope: &RwLock<ScopeRoots>,
+    mutations: &Mutex<()>,
+    mutation: impl FnOnce() -> T,
+) -> T {
+    let _guard = mutations.lock();
+    scope.write().store_generation += 1;
+    let result = mutation();
+    scope.write().store_generation += 1;
+    result
+}
+
+fn refresh_roots(
+    scope: &RwLock<ScopeRoots>,
+    mutations: &Mutex<()>,
+    build: impl Fn() -> Vec<PathBuf>,
+) {
+    loop {
+        let generation = {
+            let _guard = mutations.lock();
+            scope.write().begin_refresh()
+        };
+        let next = build();
+        if scope.write().publish(generation, next) {
+            return;
+        }
+        // A store write overtook this snapshot; rebuild synchronously.
+    }
+}
+
+fn trusted_project_roots(
+    projects: Vec<crate::store::Project>,
+    mut canonicalize: impl FnMut(&Path) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
+    projects
+        .into_iter()
+        .filter(crate::store::Project::is_trusted_local)
+        .filter_map(|p| canonicalize(Path::new(&p.path)))
+        .collect()
 }
 
 fn extra_grants() -> &'static RwLock<Vec<PathBuf>> {
@@ -23,11 +100,13 @@ fn extra_grants() -> &'static RwLock<Vec<PathBuf>> {
 /// Rebuild allowlisted roots from the project store + app data + temp.
 /// Call on startup and whenever projects are added / removed / relocated / trusted.
 pub fn refresh_from_store() {
-    let mut next: Vec<PathBuf> = crate::store::load_projects()
-        .into_iter()
-        .filter(|p| p.trusted)
-        .filter_map(|p| PathBuf::from(p.path).canonicalize().ok())
-        .collect();
+    refresh_roots(roots(), project_mutations(), collect_roots);
+}
+
+fn collect_roots() -> Vec<PathBuf> {
+    let mut next = trusted_project_roots(crate::store::load_projects_metadata(), |path| {
+        path.canonicalize().ok()
+    });
 
     if let Ok(app) = crate::paths::app_data_root().canonicalize() {
         next.push(app);
@@ -42,11 +121,14 @@ pub fn refresh_from_store() {
         next.push(std::env::temp_dir());
     }
 
-    // Agent session media (`images/`, `videos/`) lives under GROK_HOME.
-    // Independent mode is already under app_data; shared mode is `~/.grok` and
-    // must be listed so chat image/video cards can load via media HTTP.
-    let settings = crate::store::load_settings();
-    let agent_home = crate::paths::resolve_agent_grok_home(&settings.session_data_mode);
+    // Agent media lives under SUPERCHARGE_HOME (or the independent app home).
+    // Resolve without initializing directories or migrating settings.
+    let session_data_mode = crate::store::load_path_scope_session_data_mode();
+    let agent_home = if session_data_mode.trim().eq_ignore_ascii_case("shared") {
+        crate::paths::shared_supercharge_home()
+    } else {
+        crate::paths::agent_home_dir()
+    };
     if let Ok(c) = agent_home.canonicalize() {
         next.push(c);
     } else {
@@ -74,7 +156,7 @@ pub fn refresh_from_store() {
     let mut seen = std::collections::HashSet::new();
     next.retain(|p| seen.insert(p.clone()));
 
-    *roots().write() = next;
+    next
 }
 
 /// Grant a one-off absolute path (e.g. user-picked file outside projects).
@@ -105,11 +187,15 @@ pub fn is_allowed(path: &Path) -> bool {
 }
 
 fn is_allowed_canonical(path: &Path) -> bool {
-    if roots().read().is_empty() {
+    if roots().read().paths.is_empty() {
         // Lazy init on first check (tests / early calls before setup).
         refresh_from_store();
     }
-    let under_root = roots().read().iter().any(|r| path_under_root(path, r));
+    let under_root = roots()
+        .read()
+        .paths
+        .iter()
+        .any(|r| path_under_root(path, r));
     if under_root {
         return true;
     }
@@ -155,117 +241,5 @@ pub fn require_allowed(path: &Path) -> Result<PathBuf, String> {
 pub(crate) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    struct RestoreHome(Option<String>);
-    impl Drop for RestoreHome {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(v) => std::env::set_var("GROK_APP_HOME", v),
-                None => std::env::remove_var("GROK_APP_HOME"),
-            }
-        }
-    }
-
-    fn with_isolated_roots(project: &Path, app: &Path, include_temp: bool, f: impl FnOnce()) {
-        let _g = TEST_LOCK.blocking_lock();
-        let _home = crate::paths::APP_HOME_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let prev = std::env::var("GROK_APP_HOME").ok();
-        std::env::set_var("GROK_APP_HOME", app);
-        let _restore = RestoreHome(prev);
-        let _ = fs::create_dir_all(app);
-        let _ = fs::create_dir_all(project);
-        let projects_file = app.join("projects.json");
-        let _ = fs::write(&projects_file, "[]");
-        // Install a deterministic root set (optional temp) so tests do not depend on the
-        // real machine project list or always-on temp allow.
-        let mut next = Vec::new();
-        if let Ok(c) = project.canonicalize() {
-            next.push(c);
-        }
-        if let Ok(c) = app.canonicalize() {
-            next.push(c);
-        } else {
-            next.push(app.to_path_buf());
-        }
-        if include_temp {
-            if let Ok(c) = std::env::temp_dir().canonicalize() {
-                next.push(c);
-            }
-        }
-        *roots().write() = next;
-        *extra_grants().write() = Vec::new();
-        f();
-        *extra_grants().write() = Vec::new();
-        *roots().write() = Vec::new();
-    }
-
-    #[test]
-    fn allows_path_under_project() {
-        let tmp = std::env::temp_dir().join(format!("grok-scope-{}", std::process::id()));
-        let project = tmp.join("proj");
-        let app = tmp.join("app");
-        let _ = fs::create_dir_all(&project);
-        let file = project.join("readme.md");
-        fs::write(&file, "hi").unwrap();
-        with_isolated_roots(&project, &app, false, || {
-            assert!(is_allowed(&file));
-            assert!(require_allowed(&file).is_ok());
-        });
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn denies_path_outside_roots() {
-        let tmp = std::env::temp_dir().join(format!("grok-scope-out-{}", std::process::id()));
-        let project = tmp.join("proj");
-        let app = tmp.join("app");
-        let _ = fs::create_dir_all(&project);
-        let _ = fs::create_dir_all(tmp.join("other"));
-        let outside = tmp.join("other").join("secret.txt");
-        fs::write(&outside, "secret").unwrap();
-        // No global temp root — sibling of project must be denied.
-        with_isolated_roots(&project, &app, false, || {
-            assert!(!is_allowed(&outside));
-            assert!(require_allowed(&outside).is_err());
-        });
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn grant_path_allows_one_off() {
-        let tmp = std::env::temp_dir().join(format!("grok-scope-grant-{}", std::process::id()));
-        let project = tmp.join("proj");
-        let app = tmp.join("app");
-        let other = tmp.join("picked");
-        let _ = fs::create_dir_all(&project);
-        let _ = fs::create_dir_all(&other);
-        let file = other.join("picked.md");
-        fs::write(&file, "x").unwrap();
-        with_isolated_roots(&project, &app, false, || {
-            assert!(!is_allowed(&file));
-            grant_path(&file);
-            assert!(is_allowed(&file));
-            let sibling = other.join("secret.key");
-            fs::write(&sibling, "no").unwrap();
-            assert!(
-                !is_allowed(&sibling),
-                "granting a file must not unlock siblings in the parent dir"
-            );
-        });
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn prefix_does_not_match_sibling_name() {
-        // /foo should not allow /foobar
-        let foo = PathBuf::from("/foo");
-        let foobar = PathBuf::from("/foobar/x");
-        assert!(!path_under_root(&foobar, &foo));
-        assert!(path_under_root(Path::new("/foo/bar"), &foo));
-    }
-}
+#[path = "path_scope/tests.rs"]
+mod tests;

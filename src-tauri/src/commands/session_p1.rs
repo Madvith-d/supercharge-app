@@ -515,7 +515,9 @@ pub fn open_http_url(url: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn projects_list() -> Result<Vec<Project>, String> {
-    Ok(store::load_projects())
+    tokio::task::spawn_blocking(store::load_projects)
+        .await
+        .map_err(|e| format!("projects_list join: {e}"))
 }
 
 /// Default cwd for chats without a bound project folder (`workspaces/general`).

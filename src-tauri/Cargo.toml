@@ -1,6 +1,6 @@
 [package]
 name = "supercharge-app"
-version = "0.2.45"
+version = "0.2.46"
 description = "Supercharge desktop workbench for local coding agents"
 authors = ["Supercharge contributors"]
 edition = "2021"
@@ -139,7 +139,7 @@ gtk = { version = "0.18", features = ["v3_24"] }
 webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
-tauri-plugin-window-state = "2"
+tauri-plugin-window-state = { version = "=2.4.1", path = "../vendor/tauri-plugin-window-state" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"
