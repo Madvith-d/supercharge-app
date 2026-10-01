@@ -487,7 +487,7 @@ pub fn prepare_for_launch(session_id: &str) -> Result<bool, String> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = session_id;
-        return Ok(false);
+        Ok(false)
     }
     #[cfg(target_os = "linux")]
     {
@@ -527,7 +527,7 @@ pub fn entry_for_session(session_id: &str) -> Result<Option<Value>, String> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = session_id;
-        return Ok(None);
+        Ok(None)
     }
     #[cfg(target_os = "linux")]
     {
@@ -667,7 +667,7 @@ fn supported_node_version(raw: &str) -> bool {
 pub async fn resolve_node_runtime() -> Result<PathBuf, String> {
     #[cfg(not(target_os = "linux"))]
     {
-        return Err("Managed MCP bridge is supported only on Linux".into());
+        Err("Managed MCP bridge is supported only on Linux".into())
     }
     #[cfg(target_os = "linux")]
     {
