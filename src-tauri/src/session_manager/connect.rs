@@ -56,6 +56,36 @@ fn emit_host_exit_heal(app: &AppHandle, session_id: &str) {
     );
 }
 
+async fn open_native_with_pending_cut<Load, Rewind, RewindFuture>(
+    load: Load,
+    pending_cut: Option<u32>,
+    rewind: Rewind,
+) -> Result<(String, bool), AgentError>
+where
+    Load: std::future::Future<Output = Result<(String, bool), AgentError>>,
+    Rewind: FnOnce(String, u32) -> RewindFuture,
+    RewindFuture: std::future::Future<Output = Result<(), String>>,
+{
+    let (session_id, resumed) = load.await?;
+    if !resumed {
+        return Err(AgentError::new(
+            AgentErrorCode::ConnectFailed,
+            "Native history load did not resume the copied conversation",
+        ));
+    }
+    if let Some(prompt_index) = pending_cut {
+        rewind(session_id.clone(), prompt_index)
+            .await
+            .map_err(|error| {
+                AgentError::new(
+                    AgentErrorCode::ConnectFailed,
+                    format!("Native history rewind to prompt {prompt_index} failed: {error}"),
+                )
+            })?;
+    }
+    Ok((session_id, true))
+}
+
 impl SessionManager {
     pub async fn connect(
         self: &Arc<Self>,
@@ -334,7 +364,12 @@ impl SessionManager {
                     .find(|p| p.id == pid)
                     .map(|p| std::path::PathBuf::from(&p.path))
             });
-            from_arg.or(from_meta).unwrap_or_else(|| {
+            let from_cli = meta
+                .cli_source
+                .as_ref()
+                .and_then(|source| source.cwd.as_deref())
+                .map(std::path::PathBuf::from);
+            from_cli.or(from_arg).or(from_meta).unwrap_or_else(|| {
                 let _ = store::ensure_general_workspace_dir();
                 crate::paths::general_workspace_dir()
             })
@@ -716,6 +751,80 @@ impl SessionManager {
             return self.connect_mock(app, mock_mode).await;
         }
 
+        let mut cli_continuation = None;
+        if meta.cli_source.is_some() {
+            let unsupported = ssh_alias.is_some();
+            crate::providers::prepare_route_auth_for_agent();
+            let runtime_home = crate::paths::resolve_inference_grok_home(
+                &store::load_settings().session_data_mode,
+                matches!(
+                    crate::providers::active_route(),
+                    crate::providers::ActiveRoute::Custom { .. }
+                ),
+            );
+            let copy_id = meta.id.clone();
+            let copy_cwd = cwd.clone();
+            let copy_model = agent_model.clone();
+            let copy_manager = Arc::clone(self);
+            let copy_generation = self.connect_epoch.load(std::sync::atomic::Ordering::SeqCst);
+            let prepared = tauri::async_runtime::spawn_blocking(move || {
+                let _preparation = crate::cli_history_continue::lock_preparation(&copy_id)?;
+                let mut copy_meta = store::load_sessions_index()
+                    .into_iter()
+                    .find(|meta| meta.id == copy_id)
+                    .ok_or("Session was removed")?;
+                if unsupported {
+                    return Err("CLI history continuation requires a local connection".into());
+                }
+                let prepared = crate::cli_history_continue::prepare(
+                    &copy_meta,
+                    &runtime_home,
+                    &copy_cwd,
+                    &copy_model,
+                )?;
+                crate::cli_history_continue::commit_if_current(
+                    &copy_manager.connect_epoch,
+                    copy_generation,
+                    || {
+                        // A failed handshake retries the same persisted execution.
+                        crate::cli_history_continue::record_execution(&copy_meta, &prepared)?;
+                        crate::cli_history::materialize_execution(
+                            &copy_meta.id,
+                            &prepared.directory,
+                        )?;
+                        copy_meta.agent_session_id = Some(prepared.agent_session_id.clone());
+                        if let Some(source) = copy_meta.cli_source.as_mut() {
+                            source.app_owned = true;
+                        }
+                        store::update_session_meta(&copy_meta)
+                            .map_err(|e| format!("Persist CLI execution linkage: {e}"))?;
+                        Ok((prepared, copy_meta))
+                    },
+                )
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|result| result);
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(message) => {
+                    if let Some(s) = self.inner.lock().as_mut() {
+                        let _ = s.fsm.connect_failed(AgentError::new(
+                            AgentErrorCode::ConnectFailed,
+                            message.clone(),
+                        ));
+                    }
+                    Self::emit_state(&app, &self.snapshot());
+                    return Err(message);
+                }
+            };
+            meta = prepared.1;
+            if let Some(s) = self.inner.lock().as_mut() {
+                s.meta = meta.clone();
+            }
+            cli_continuation = Some(prepared.0);
+        }
+
         // Remember prior agent session for resume (before we overwrite meta).
         let resume_agent_sid = meta.agent_session_id.clone();
         let journal_has_history = store::load_messages(&meta.id).iter().any(|m| {
@@ -740,7 +849,7 @@ impl SessionManager {
         // Prewarm also omits folder `--trust`, per-session `--rules`,
         // `--system-prompt-override`, and `--plugin-dir`. Reusing it for those
         // connects would silently drop AGENTS.md / session rules.
-        if !pending_fork && ssh_alias.is_none() {
+        if !pending_fork && ssh_alias.is_none() && cli_continuation.is_none() {
             let project_row_early = meta
                 .project_id
                 .as_deref()
@@ -1303,10 +1412,47 @@ impl SessionManager {
         );
         let rewind_index = meta.fork_rewind_prompt_index;
         client.bind_browser_session(&meta.id);
-        let open_result = Self::with_handshake_budget(
-            client.initialize_and_open_session(resume_agent_sid.as_deref(), fork_agent),
-        )
-        .await;
+        let open_result = if let Some(prepared) = cli_continuation.as_mut() {
+            if let Some(lease) = prepared.lease.take() {
+                client.hold_cli_history_lease(lease);
+            }
+            let cut_meta = meta.clone();
+            let native_cut = tokio::task::spawn_blocking(move || {
+                super::fork_trim::pending_child_rewind_exec_index(&cut_meta)
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+            match native_cut {
+                Err(error) => Err(AgentError::new(AgentErrorCode::ConnectFailed, error)),
+                Ok(exclusive_index) => {
+                    open_native_with_pending_cut(
+                        Self::with_handshake_budget(
+                            client.load_session_strict(&prepared.agent_session_id),
+                        ),
+                        exclusive_index,
+                        |session_id, prompt_index| {
+                            let client = Arc::clone(&client);
+                            async move {
+                                Self::with_soft_rpc_budget(client.rewind_execute_for(
+                                    &session_id,
+                                    prompt_index,
+                                    false,
+                                ))
+                                .await
+                                .map(|_| ())
+                            }
+                        },
+                    )
+                    .await
+                }
+            }
+        } else {
+            Self::with_handshake_budget(
+                client.initialize_and_open_session(resume_agent_sid.as_deref(), fork_agent),
+            )
+            .await
+        };
 
         match open_result {
             Ok((mut agent_sid, resumed)) => {
@@ -1316,6 +1462,11 @@ impl SessionManager {
                 let mut skip_set_mode = fork_agent && matches!(plan, ChildTrimPlan::Skip);
 
                 match plan {
+                    ChildTrimPlan::RewindChild { .. } if cli_continuation.is_some() => {
+                        rewind_ok = Some(true);
+                        need_bootstrap = false;
+                        skip_set_mode = true;
+                    }
                     ChildTrimPlan::RewindChild { prompt_index } => {
                         // Post-open RPC, so it runs outside `with_handshake_budget`
                         // while `connect_lock` is still held. Unbounded, it pinned
@@ -1391,11 +1542,10 @@ impl SessionManager {
                                         );
                                         Self::kill_acp_bounded(&client).await;
                                         self.unregister_pending_child(&process_id);
-                                        if meta.fork_agent_session {
-                                            let _ = store::clear_session_fork_after_connect_failure(
-                                                &meta.id,
+                                        let _ =
+                                            crate::cli_history_continue::clear_failed_legacy_fork(
+                                                &meta,
                                             );
-                                        }
                                         {
                                             let mut guard = self.inner.lock();
                                             if let Some(s) = guard.as_mut() {
@@ -1507,11 +1657,7 @@ impl SessionManager {
                 Ok(self.snapshot())
             }
             Err(e) => {
-                // Failed open must drop the one-shot so the next connect does
-                // not retry session/fork forever. Success clears via live meta.
-                if meta.fork_agent_session {
-                    let _ = store::clear_session_fork_after_connect_failure(&meta.id);
-                }
+                let _ = crate::cli_history_continue::clear_failed_legacy_fork(&meta);
                 tracing::warn!(
                     target: "session",
                     session = %meta.id,
@@ -2120,6 +2266,80 @@ mod connect_preserve_tests {
         assert_eq!(next_connect_epoch_on_timeout(9, 7), 9);
     }
 
+    #[tokio::test]
+    async fn native_open_load_failure_never_attempts_rewind() {
+        let calls = std::cell::Cell::new(0);
+        let result = open_native_with_pending_cut(
+            std::future::ready(Err(AgentError::new(
+                AgentErrorCode::ConnectFailed,
+                "native load failed",
+            ))),
+            Some(0),
+            |_, _| {
+                calls.set(calls.get() + 1);
+                std::future::ready(Ok(()))
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err().message, "native load failed");
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn native_open_rewind_failure_is_an_error_not_a_bootstrap() {
+        let result = open_native_with_pending_cut(
+            std::future::ready(Ok(("copied-child".into(), true))),
+            Some(3),
+            |session_id, prompt_index| {
+                assert_eq!(session_id, "copied-child");
+                assert_eq!(prompt_index, 3);
+                std::future::ready(Err("rewind unsupported".into()))
+            },
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert_eq!(error.code, AgentErrorCode::ConnectFailed);
+        assert!(error.message.contains("rewind to prompt 3 failed"));
+        assert!(error.message.contains("rewind unsupported"));
+    }
+
+    #[tokio::test]
+    async fn native_open_requires_resume_before_applying_any_pending_cut() {
+        let calls = std::cell::Cell::new(0);
+        let result = open_native_with_pending_cut(
+            std::future::ready(Ok(("unexpected-new-session".into(), false))),
+            Some(0),
+            |_, _| {
+                calls.set(calls.get() + 1);
+                std::future::ready(Ok(()))
+            },
+        )
+        .await;
+        assert!(result.unwrap_err().message.contains("did not resume"));
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn native_open_applies_pending_cut_once_and_full_forks_skip_rewind() {
+        for cut in [None, Some(0)] {
+            let calls = std::cell::Cell::new(0);
+            let result = open_native_with_pending_cut(
+                std::future::ready(Ok(("copied-child".into(), true))),
+                cut,
+                |session_id, prompt_index| {
+                    assert_eq!(session_id, "copied-child");
+                    assert_eq!(Some(prompt_index), cut);
+                    calls.set(calls.get() + 1);
+                    std::future::ready(Ok(()))
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(result, ("copied-child".into(), true));
+            assert_eq!(calls.get(), usize::from(cut.is_some()));
+        }
+    }
+
     #[test]
     fn ready_preserves_only_when_busy() {
         assert!(connect_should_preserve_live_process(
@@ -2150,6 +2370,7 @@ mod connect_preserve_tests {
                 project_id: None,
                 title: "Stuck".into(),
                 agent_session_id: Some("agent-1".into()),
+                cli_source: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 model_id: None,
@@ -2249,6 +2470,7 @@ mod connect_preserve_tests {
                 project_id: None,
                 title: "Already live".into(),
                 agent_session_id: Some("agent-1".into()),
+                cli_source: None,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 model_id: None,

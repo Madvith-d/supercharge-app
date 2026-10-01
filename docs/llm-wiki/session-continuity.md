@@ -1,5 +1,17 @@
 # Session continuity & context compact
 
+## Automatic local CLI history
+
+The sidebar discovers terminal `~/.supercharge`, inherited `SUPERCHARGE_HOME` when distinct, and App `agent-home` independently of provider selection and Shared/Independent runtime mode. Discovery is local, metadata-first and uncapped; the frontend requests it at startup, on focus, and every ten seconds while visible. Hidden CLI/subagent histories and empty unnamed startup remnants follow native visibility rules. Shell-only environment overrides, SSH hosts and remote/cloud histories are not implicitly scanned.
+
+`SessionMeta.cliSource` records canonical source home, relative session directory and original agent ID separately from `agentSessionId`, which identifies App execution. Source-only rows lazily project `updates.jsonl` into a separate `cli_transcript.json` cache; absence of updates permits legacy `chat_history.jsonl` fallback. Simply viewing does not create an App journal or claim the source. Partial trailing records wait for the next refresh, while a failed refresh preserves the last valid projection.
+
+Continuing a discovered conversation uses a verified native-state copy in the selected provider's runtime home. It never copies credentials/configuration or writes into the terminal conversation. The original remains independently discoverable; the App continuation owns its own journal and execution identity. Managed execution copies are not rediscovered as duplicate sidebar entries. Unflushed terminal work is not included. Native load retains persisted conversation/tool history while the CLI regenerates its primary system prompt for the current runtime. Unsafe, unsupported, or changing source state must fail explicitly rather than silently falling back to a fresh session with partial context. Native partial forks retain their pending cut across failed loads and rewinds.
+
+Archive remains App-only. Deleting a source-only App row records a durable source-specific suppression and preserves terminal files; explicit Account CLI deletion is a separate source-aware operation. Discovery never grants workspace trust. Existing App journals, edits, rewinds, pins and archives remain authoritative.
+
+Relevant modules: `cli_history`, `cli_history_transcript`, `cli_history_continue`, `useCliHistorySync`, and `useSessionCatalog`.
+
 ## Session ID convention (for agents / debug paste)
 
 When the user pastes a **session id** (UUID) into chat or issues for debugging:
@@ -23,7 +35,8 @@ External apps on this machine that need to **list chats and continue one by id**
 | Action | App sidebar | CLI `{SUPERCHARGE_HOME}/sessions/.../<agentSessionId>/` | Bulk import |
 |--------|-------------|--------------------------------------------------|-------------|
 | Archive | Hidden (`archived: true`); `agentSessionId` stays linked | Unchanged (terminal `supercharge sessions list` still shows it). Confirm copy says App-only. | Skipped (`already_linked`) |
-| Delete | Journal + index row removed | Removed after ACP stop; tombstone if the tree is locked | Skipped (tombstone + missing dir) |
+| Delete source-linked App row | Journal + index row removed | Unchanged | Source-specific suppression prevents rediscovery |
+| Delete legacy App-only row | Journal + index row removed | Existing linked-runtime cleanup after ACP stop | Skipped (legacy tombstone + missing dir) |
 
 New chats in a project inherit that project's multi-root workspace so extra-root write is not bound only to the session that opened the modal (#1233).
 

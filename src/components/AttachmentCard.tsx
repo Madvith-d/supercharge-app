@@ -7,9 +7,14 @@
  * missing/broken states surface via title + placeholder (no invented image).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment } from "@/lib/attachments";
-import { isImagePath } from "@/lib/attachments";
+import {
+  isAudioPath,
+  isImagePath,
+  isInlineAttachmentPath,
+  isVideoPath,
+} from "@/lib/attachments";
 import {
   attachPreviewMessageKey,
   deriveAttachPreviewPhase,
@@ -34,6 +39,10 @@ import {
 import { Tip } from "@/components/ui/tooltip";
 import { ContextMenu, type ContextMenuItem } from "@/components/ContextMenu";
 
+const FileMediaPlayer = lazy(() =>
+  import("@/components/FileMediaPlayer").then((m) => ({ default: m.FileMediaPlayer })),
+);
+
 export interface AttachmentCardLabels {
   open: string;
   reveal: string;
@@ -48,6 +57,8 @@ export interface AttachmentCardLabels {
   previewMissing?: string;
   /** Loading thumb (optional; falls back to path tip). */
   previewPending?: string;
+  mediaLoadError?: string;
+  mediaLoading?: string;
 }
 
 interface AttachmentCardProps {
@@ -73,7 +84,15 @@ export function AttachmentCard({
   galleryPaths,
 }: AttachmentCardProps) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const isInline = isInlineAttachmentPath(attachment.path);
   const isImg = !attachment.isDir && isImagePath(attachment.path);
+  const mediaKind = isInline && !attachment.isDir
+    ? isAudioPath(attachment.path)
+      ? "audio"
+      : isVideoPath(attachment.path) ? "video" : null
+    : null;
+  const [mediaOpen, setMediaOpen] = useState(false);
+  useEffect(() => setMediaOpen(false), [attachment.path]);
   const [thumbSrc, setThumbSrc] = useState<string | null>(() =>
     isImg
       ? chatCardFirstPaintSrc(attachment.path, attachment.path, "card")
@@ -103,7 +122,7 @@ export function AttachmentCard({
     let cancelled = false;
     void (async () => {
       try {
-        await ensureMediaEndpoint();
+        if (!isInline) await ensureMediaEndpoint();
         const r = await resolveChatImageThumb(
           attachment.path,
           attachment.path,
@@ -121,7 +140,7 @@ export function AttachmentCard({
     return () => {
       cancelled = true;
     };
-  }, [attachment.path, isImg]);
+  }, [attachment.path, isImg, isInline]);
 
   const previewPhase = useMemo(
     () =>
@@ -145,9 +164,11 @@ export function AttachmentCard({
     if (key === "attach.preview.pending" && labels.previewPending) {
       return labels.previewPending;
     }
-    return attachment.path;
+    return isInline ? attachment.name : attachment.path;
   }, [
     attachment.path,
+    attachment.name,
+    isInline,
     labels.previewBroken,
     labels.previewMissing,
     labels.previewPending,
@@ -157,6 +178,7 @@ export function AttachmentCard({
   const showThumb = isImg && !!thumbSrc && !thumbFailed;
 
   const openPath = async () => {
+    if (isInline) return;
     try {
       if (api.isTauri()) await api.pathOpen(attachment.path);
     } catch (e) {
@@ -165,6 +187,7 @@ export function AttachmentCard({
   };
 
   const revealPath = async () => {
+    if (isInline) return;
     try {
       if (api.isTauri()) await api.pathReveal(attachment.path);
     } catch (e) {
@@ -191,35 +214,39 @@ export function AttachmentCard({
         : [attachment.path];
     const idx = Math.max(0, gallery.indexOf(attachment.path));
     viewer.open(
-      gallery.map((p) => ({ src: p, title: p.split(/[/\\]/).pop() })),
+      gallery.map((p) => ({
+        src: p,
+        title: p === attachment.path
+          ? attachment.name
+          : isInlineAttachmentPath(p) ? undefined : p.split(/[/\\]/).pop(),
+      })),
       idx,
     );
   };
 
   const onPrimaryClick = () => {
     if (isImg) openInViewer();
+    else if (mediaKind) setMediaOpen((open) => !open);
     else void openPath();
   };
 
-  const menuItems: ContextMenuItem[] = [
+  const menuItems: ContextMenuItem[] = [];
+  if (!isInline || isImg || mediaKind) menuItems.push(
     {
       id: "open",
       label: isImg && labels.viewImage ? labels.viewImage : labels.open,
       icon: isImg ? <IconFileText size={16} /> : <IconExternalLink size={16} />,
-      onClick: () => {
-        if (isImg) openInViewer();
-        else void openPath();
-      },
+      onClick: onPrimaryClick,
     },
-    {
+  );
+  if (!isInline) menuItems.push({
       id: "reveal",
       label: labels.reveal,
       icon: <IconFolder size={16} />,
       onClick: () => {
         void revealPath();
       },
-    },
-  ];
+    });
   if (isImg) {
     menuItems.push({
       id: "copy-image",
@@ -230,7 +257,7 @@ export function AttachmentCard({
       },
     });
   }
-  menuItems.push({
+  if (!isInline) menuItems.push({
     id: "copy-path",
     label: labels.copyPath,
     icon: <IconCopy size={16} />,
@@ -238,13 +265,55 @@ export function AttachmentCard({
       void copyPath();
     },
   });
-  if (onAddToComposer) {
+  if (onAddToComposer && !isInline) {
     menuItems.push({
       id: "add",
       label: labels.addToComposer,
       icon: <IconPaperclip size={16} />,
       onClick: () => onAddToComposer(attachment),
     });
+  }
+
+  if (mediaKind) {
+    return (
+      <div
+        style={{ maxWidth: "100%", width: mediaOpen ? 300 : undefined }}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      >
+        <div className="att-card">
+          <button
+            type="button"
+            className="att-card__btn"
+            onClick={onPrimaryClick}
+            aria-expanded={mediaOpen}
+            title={attachment.name}
+          >
+            <span className="att-card__icon"><IconFileText size={14} /></span>
+            <span className="att-card__name">{attachment.name}</span>
+          </button>
+        </div>
+        {onRemove && labels.remove && (
+          <button type="button" className="attach-chip__x" aria-label={labels.remove} onClick={() => onRemove(attachment)}>
+            <IconClose size={11} />
+          </button>
+        )}
+        {mediaOpen && (
+          <Suspense fallback={labels.mediaLoading ?? labels.previewPending ?? null}>
+            <FileMediaPlayer
+              compact
+              src={attachment.path}
+              kind={mediaKind}
+              title={attachment.name}
+              labels={{
+                loadError: labels.mediaLoadError ?? labels.previewBroken ?? "",
+                loading: labels.mediaLoading ?? labels.previewPending ?? "",
+                openExternal: labels.open,
+              }}
+            />
+          </Suspense>
+        )}
+      </div>
+    );
   }
 
   if (variant === "chip") {
@@ -270,6 +339,7 @@ export function AttachmentCard({
           <button
             type="button"
             className="attach-chip__main"
+            disabled={isInline && !isImg}
             onClick={onPrimaryClick}
             title={previewTip}
             aria-label={
@@ -359,6 +429,7 @@ export function AttachmentCard({
       <button
         type="button"
         className={"att-card__btn" + (isImg ? " att-card__btn--image" : "")}
+        disabled={isInline && !isImg}
         onClick={onPrimaryClick}
         title={previewTip}
         aria-label={

@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::session_dir;
-use crate::store::{self, ChatMessageStored, SessionMeta};
+use crate::store::{self, SessionMeta};
 
 /// Max sessions to open on disk (most recently updated first).
 const MAX_SESSIONS_SCAN: usize = 200;
@@ -171,17 +171,33 @@ pub fn search_sessions(query: &str, limit: usize) -> Vec<SessionContentHit> {
 
 fn scan_session(meta: &SessionMeta, query: &str) -> Option<SessionContentHit> {
     let path = session_dir(&meta.id).join("messages.json");
-    if !path.is_file() {
+    if path.is_file() {
+        if file_too_large(&path) {
+            return None;
+        }
+    } else if meta.cli_source.is_some() {
+        // Bound cold projection work as well as reads of an existing cache.
+        let cache = session_dir(&meta.id).join("cli_transcript.json");
+        if cache.is_file() && file_too_large(&cache) {
+            return None;
+        }
+        if let Some(dir) = crate::cli_history_continue::history_directory(meta) {
+            let updates = dir.join("updates.jsonl");
+            let transcript = if updates.exists() {
+                updates
+            } else {
+                dir.join("chat_history.jsonl")
+            };
+            if transcript.is_file() && file_too_large(&transcript) {
+                return None;
+            }
+        }
+    } else {
         return None;
     }
-    if file_too_large(&path) {
-        return None;
-    }
-    let messages: Vec<ChatMessageStored> = match fs::read_to_string(&path) {
-        Ok(s) if s.trim().is_empty() => return None,
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => return None,
-    };
+    let messages = crate::cli_history::read_messages(&meta.id)
+        .ok()?
+        .unwrap_or_else(|| store::load_messages(&meta.id));
     let iter = messages
         .iter()
         .map(|m| (m.role.as_str(), m.content.as_str()));

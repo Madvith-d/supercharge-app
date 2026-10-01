@@ -143,6 +143,8 @@ Custom providers are written only under App **agent-home** `config.toml`. Defaul
 
 Official route does **not** force mode back to shared.
 
+History visibility is independent of this runtime isolation. The sidebar always discovers the default terminal Supercharge home, any distinct inherited `SUPERCHARGE_HOME`, and App `agent-home`. Selecting a custom provider neither hides terminal chats nor rewrites terminal credentials/configuration. Continuing a terminal conversation with a custom provider copies verified native session state into App `agent-home`; the terminal original remains intact. See [session-continuity.md](./session-continuity.md#automatic-local-cli-history).
+
 ## Official tool injection
 
 Settings → Account → **Extras** → toggle **Inject official tools** (`official_aux_inject`).

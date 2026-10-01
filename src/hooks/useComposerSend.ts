@@ -35,6 +35,8 @@ import {
   projectDraftKey,
   saveComposerProjectDraft,
 } from "@/lib/composerProjectDraft";
+import { isExternalCliSession } from "@/lib/sessionCliSource";
+import { refreshCliContinuationJournal } from "@/lib/sessionCliContinuation";
 import {
   appendQuotesToContent,
   serializeQuotesForAgent,
@@ -152,7 +154,7 @@ export type ComposerSendHost = {
     reduce: (prev: ChatMessage[]) => ChatMessage[],
   ) => void;
   ensureConnected: (
-    forceOrOpts?: boolean | { force?: boolean; sessionId?: string | null },
+    forceOrOpts?: boolean | { force?: boolean; sessionId?: string | null; intent?: "send" },
   ) => Promise<string | null>;
   getDraft: () => string;
   requestComposerFocus: () => void;
@@ -263,11 +265,6 @@ export function useComposerSend(host: ComposerSendHost) {
     setAppDialog,
   } = host;
 
-/**
- * Dispatch one user turn (optimistic UI + connect + session_send).
- * @param targetSessionId When set (queue flush), bind optimistic UI to this id.
- * @param fromQueue Drop user+assistant on failure so requeue does not duplicate.
- */
 const executeSend = async (opts: {
   storedDisplay: string;
   att: Attachment[];
@@ -300,6 +297,7 @@ const executeSend = async (opts: {
           viewingSessionId: viewingSessionIdRef.current,
           shellSessionId: session.sessionId,
         });
+  const sourceHistory = isExternalCliSession(sessions.find((row) => row.id === sendTargetId));
   const sendKey = queueSessionKey(sendTargetId);
   if (!claimSendForSession(sendTargetId)) return false;
   // A prior Stop may still be holding force_idle (Host lag). New turn owns Stop/Send.
@@ -491,12 +489,15 @@ const executeSend = async (opts: {
       failStrip();
       return false;
     } else {
-      sessionId = await ensureConnected({ sessionId: sendTargetId });
+      sessionId = await ensureConnected({ sessionId: sendTargetId, intent: "send" });
     }
     if (!sessionId) {
       failStrip();
       return false;
     }
+    if (sourceHistory && !await refreshCliContinuationJournal(
+      sessionId, [userMessageId, pendingAssistantId], sendEpochCurrent, patchSessionMessages,
+    )) return false;
     // ensureConnected can paint Host Ready between connect and sessionSend.
     // Re-assert busy so the composer keeps Stop with no gap.
     if (viewingTarget()) {
@@ -631,6 +632,7 @@ const executeSend = async (opts: {
       const reconnected = await ensureConnected({
         sessionId,
         force: true,
+        intent: "send",
       });
       if (reconnected !== sessionId) throw sendErr;
       if (!sendEpochCurrent()) return false;

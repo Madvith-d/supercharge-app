@@ -63,6 +63,10 @@ mod cli_probe;
 
 mod cli_sessions;
 
+mod cli_history;
+mod cli_history_continue;
+mod cli_history_transcript;
+
 mod cli_update;
 
 mod cli_worktrees;

@@ -111,6 +111,8 @@ export const ptBRSession = {
   "session.move.ghostMany": "{n} chats",
   "session.deleteTitle": "Excluir chat",
   "session.deleteConfirm": "Excluir “{name}” permanentemente? Isso não pode ser desfeito.",
+  "session.deleteExternalConfirm": "Remover “{name}” do aplicativo? O histórico original da CLI não será excluído.",
+  "session.deleteExternalNote": "Históricos externos da CLI são removidos apenas do aplicativo. Os arquivos originais não serão excluídos.",
   "session.deleteManyTitle": "Excluir chats",
   "session.deleteManyConfirm": "Excluir {n} chats permanentemente? Isso não pode ser desfeito.",
   "session.menu": "Menu da sessão",

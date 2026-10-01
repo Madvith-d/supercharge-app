@@ -31,6 +31,14 @@ export type ForkGitStatusSnapshot = {
  */
 export const FORK_SESSION_CLI_FLAG = "--fork-session";
 
+export function resolveForkSourceAgentId(
+  source: { agentSessionId?: string | null; cliSource?: { agentSessionId: string } | null },
+  liveAgentSessionId?: string | null,
+): string | null {
+  return [source.agentSessionId, source.cliSource?.agentSessionId, liveAgentSessionId]
+    .map((id) => id?.trim()).find((id) => !!id) ?? null;
+}
+
 /**
  * Top-level CLI args for fork-session: `["--fork-session"]` or `[]`.
  * Host spawn for `agent stdio` does **not** pass this alone (CLI requires

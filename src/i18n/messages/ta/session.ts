@@ -111,6 +111,8 @@ export const taSession = {
   "session.move.ghostMany": "{n} உரையாடல்கள்",
   "session.deleteTitle": "உரையாடலை நீக்கு",
   "session.deleteConfirm": "\"{name}\" ஐ நிரந்தரமாக நீக்கவா? இதை செயல்தவிர்க்க முடியாது.",
+  "session.deleteExternalConfirm": "“{name}” என்பதை செயலியிலிருந்து அகற்றவா? அசல் CLI வரலாறு நீக்கப்படாது.",
+  "session.deleteExternalNote": "வெளிப்புற CLI வரலாறுகள் செயலியிலிருந்து மட்டுமே அகற்றப்படும். அசல் கோப்புகள் நீக்கப்படாது.",
   "session.deleteManyTitle": "உரையாடல்களை நீக்கு",
   "session.deleteManyConfirm": "{n} உரையாடல்களை நிரந்தரமாக நீக்கவா? இதை செயல்தவிர்க்க முடியாது.",
   "session.menu": "அமர்வு மெனு",

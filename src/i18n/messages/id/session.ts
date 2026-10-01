@@ -111,6 +111,8 @@ export const idSession = {
   "session.move.ghostMany": "{n} obrolan",
   "session.deleteTitle": "Hapus obrolan",
   "session.deleteConfirm": "Hapus “{name}” secara permanen? Tindakan ini tidak dapat dibatalkan.",
+  "session.deleteExternalConfirm": "Hapus “{name}” dari aplikasi? Riwayat CLI asli tidak akan dihapus.",
+  "session.deleteExternalNote": "Riwayat CLI eksternal hanya dihapus dari aplikasi. File aslinya tidak akan dihapus.",
   "session.deleteManyTitle": "Hapus obrolan",
   "session.deleteManyConfirm": "Hapus {n} obrolan secara permanen? Tindakan ini tidak dapat dibatalkan.",
   "session.menu": "Menu sesi",

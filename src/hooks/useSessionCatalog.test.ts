@@ -4,7 +4,7 @@
  * Catalog list + multi-select live here. Open/new-chat live in useSessionNavigation.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import * as api from "@/lib/api";
 import {
   sessionSidebarSelectOrder,
@@ -73,8 +73,11 @@ describe("sessionSidebarSelectOrder", () => {
 describe("useSessionCatalog", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(api, "cliHistorySync").mockResolvedValue(false);
   });
   afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -177,6 +180,112 @@ describe("useSessionCatalog", () => {
       await Promise.resolve();
     });
     expect(result.current.sessions.map((s) => s.id)).toEqual(["fresh"]);
+  });
+
+  it("discovers terminal history at startup without any manual import", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, "hasHost").mockReturnValue(true);
+    vi.spyOn(api, "isDesktopHost").mockReturnValue(true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    let onChanged: ((payload: { reason?: string }) => void) | undefined;
+    vi.spyOn(api, "listen").mockImplementation(async (_event, handler) => {
+      onChanged = handler;
+      return () => {};
+    });
+    const listRow = { id: "cli-row", title: "Terminal chat", projectId: null,
+      updatedAt: "2026-01-03T00:00:00Z", modelId: null };
+    vi.spyOn(api, "sessionsList").mockResolvedValue([listRow]);
+    vi.spyOn(api, "trayRefresh").mockResolvedValue(undefined as never);
+    vi.spyOn(api, "cliSessionImport");
+    vi.spyOn(api, "cliSessionsImportAll");
+    vi.mocked(api.cliHistorySync).mockImplementationOnce(async () => {
+      expect(onChanged).toBeTypeOf("function");
+      onChanged?.({ reason: "cli_history_sync" });
+      return true;
+    });
+    const { result } = setup();
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+    expect(result.current.sessions.map((s) => s.id)).toEqual(["cli-row"]);
+    expect(api.cliSessionImport).not.toHaveBeenCalled();
+    expect(api.cliSessionsImportAll).not.toHaveBeenCalled();
+    expect(api.cliHistorySync).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(api.cliHistorySync).toHaveBeenCalledTimes(4);
+    expect(api.sessionsList).toHaveBeenCalledTimes(1);
+    expect(api.trayRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects older catalog responses and late responses after cleanup", async () => {
+    const pending: Array<(rows: Awaited<ReturnType<typeof api.sessionsList>>) => void> = [];
+    vi.spyOn(api, "sessionsList").mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    vi.spyOn(api, "trayRefresh").mockResolvedValue(undefined as never);
+    const { result, unmount } = setup();
+    let older!: Promise<void>;
+    let newer!: Promise<void>;
+    act(() => {
+      older = result.current.refreshSessions();
+      newer = result.current.refreshSessions();
+    });
+    await act(async () => {
+      pending[1]([{ id: "new", title: "New", projectId: null, modelId: null, updatedAt: "2026-01-03" }]);
+      await newer;
+      pending[0]([]);
+      await older;
+    });
+    expect(result.current.sessions.map((s) => s.id)).toEqual(["new"]);
+    expect(api.trayRefresh).toHaveBeenCalledTimes(1);
+    const late = result.current.refreshSessions();
+    unmount();
+    await act(async () => { pending[2]([]); await late; });
+    expect(api.trayRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces events and disposes late listener registration", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, "hasHost").mockReturnValue(true);
+    let onChanged!: (payload: unknown) => void;
+    let registered!: (unlisten: () => void) => void;
+    const unlisten = vi.fn();
+    vi.spyOn(api, "listen").mockImplementation((_event, handler) => {
+      onChanged = handler;
+      return new Promise((resolve) => { registered = resolve; });
+    });
+    vi.spyOn(api, "sessionsList").mockResolvedValue([]);
+    vi.spyOn(api, "trayRefresh").mockResolvedValue(undefined as never);
+    const { unmount } = setup();
+    await act(async () => {
+      onChanged({});
+      onChanged({});
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    expect(api.sessionsList).toHaveBeenCalledTimes(1);
+    onChanged({});
+    unmount();
+    await act(async () => {
+      registered(unlisten);
+      onChanged({});
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(unlisten).toHaveBeenCalledTimes(1);
+    expect(api.sessionsList).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries failed listener registration before starting inventory", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, "hasHost").mockReturnValue(true);
+    vi.spyOn(api, "isDesktopHost").mockReturnValue(true);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    vi.spyOn(api, "listen").mockRejectedValueOnce(new Error("transport"))
+      .mockResolvedValue(() => {});
+    const { unmount } = setup();
+    await act(async () => { await Promise.resolve(); });
+    expect(api.cliHistorySync).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(api.listen).toHaveBeenCalledTimes(2);
+    expect(api.cliHistorySync).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("drops selection for archived sessions", () => {

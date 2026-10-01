@@ -111,6 +111,8 @@ export const zhSession = {
   "session.move.ghostMany": "{n} 个会话",
   "session.deleteTitle": "删除会话",
   "session.deleteConfirm": "确定永久删除「{name}」？此操作不可撤销。",
+  "session.deleteExternalConfirm": "从应用中移除「{name}」？原始 CLI 历史记录不会被删除。",
+  "session.deleteExternalNote": "外部 CLI 历史记录只会从应用中移除，原始文件不会被删除。",
   "session.deleteManyTitle": "删除会话",
   "session.deleteManyConfirm": "确定永久删除 {n} 个会话？此操作不可撤销。",
   "session.menu": "会话菜单",

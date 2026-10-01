@@ -111,6 +111,8 @@ export const jaSession = {
   "session.move.ghostMany": "{n} 件のチャット",
   "session.deleteTitle": "チャットを削除",
   "session.deleteConfirm": "「{name}」を完全に削除しますか？この操作は取り消せません。",
+  "session.deleteExternalConfirm": "「{name}」をアプリから削除しますか？元の CLI 履歴は削除されません。",
+  "session.deleteExternalNote": "外部の CLI 履歴はアプリからのみ削除されます。元のファイルは削除されません。",
   "session.deleteManyTitle": "チャットを削除",
   "session.deleteManyConfirm": "{n} 件のチャットを完全に削除しますか？元に戻せません。",
   "session.menu": "セッションメニュー",

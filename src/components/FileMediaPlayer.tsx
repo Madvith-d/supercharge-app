@@ -24,6 +24,8 @@ export interface FileMediaPlayerProps {
   /** Absolute filesystem path for “Open externally”. */
   absolutePath?: string;
   className?: string;
+  /** Keep the control bar usable inside narrow chat attachment cards. */
+  compact?: boolean;
   labels?: {
     /** Generic fallback when classified keys are unavailable. */
     loadError: string;
@@ -83,6 +85,7 @@ export function FileMediaPlayer({
   title,
   absolutePath,
   className = "",
+  compact = false,
   labels,
 }: FileMediaPlayerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -117,7 +120,7 @@ export function FileMediaPlayer({
       const detail = mediaErrorMessage(el);
       setError(detail);
       setReady(false);
-      console.warn("[FileMediaPlayer] load error", detail, src);
+      console.warn("[FileMediaPlayer] load error", detail, kind);
     };
     const onMeta = () => {
       setReady(true);
@@ -135,7 +138,11 @@ export function FileMediaPlayer({
     let player: Plyr | null = null;
     try {
       player = new Plyr(el, {
-        controls: kind === "video" ? VIDEO_CONTROLS : AUDIO_CONTROLS,
+        controls: compact
+          ? kind === "video"
+            ? ["play-large", "play", "progress", "mute", "fullscreen"]
+            : ["play", "progress", "current-time", "mute"]
+          : kind === "video" ? VIDEO_CONTROLS : AUDIO_CONTROLS,
         settings: ["speed"],
         ratio: kind === "video" ? "16:9" : undefined,
         keyboard: { focused: true, global: false },
@@ -190,7 +197,7 @@ export function FileMediaPlayer({
       playerRef.current = null;
       host.innerHTML = "";
     };
-  }, [src, kind]);
+  }, [src, kind, compact]);
 
   const openExternal = async () => {
     if (!absolutePath || !api.isTauri()) return;

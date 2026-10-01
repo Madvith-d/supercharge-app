@@ -17,6 +17,7 @@ import {
   planForkTrimmedFollowUp,
   resolveForkAgentCheckbox,
   resolveForkAgentSession,
+  resolveForkSourceAgentId,
   resolveForkCliOnConfirm,
   shouldOfferAssistantFork,
   shouldShowForkCliCheckbox,
@@ -29,6 +30,21 @@ import {
   sessionForkSoftFailSilent,
   softFailKindFromRestoreGate,
 } from "./sessionFork";
+
+describe("source-aware native forks", () => {
+  it("offers native context for an unclaimed terminal source", () => {
+    const agentSessionId = resolveForkSourceAgentId({ cliSource: { agentSessionId: "terminal" } });
+    expect(agentSessionId).toBe("terminal");
+    expect(defaultForkAgentChecked(agentSessionId, "fork")).toBe(true);
+    expect(resolveForkCliOnConfirm({ throughUserPromptIndex: 0, agentSessionId })).toBe(true);
+    expect(resolveForkAgentSession({ wantFork: true, agentSessionId }).fork).toBe(true);
+  });
+  it("prefers the App continuation and keeps journal-only chats unavailable", () => {
+    expect(resolveForkSourceAgentId({ agentSessionId: "copy", cliSource: { agentSessionId: "terminal" } })).toBe("copy");
+    expect(resolveForkSourceAgentId({}, "live")).toBe("live");
+    expect(resolveForkSourceAgentId({})).toBeNull();
+  });
+});
 
 describe("forkSessionSpawnArgs / CLI --fork-session", () => {
   it("emits the top-level flag only when enabled", () => {

@@ -58,7 +58,7 @@ export function isViewableSrc(src: string): boolean {
   return (
     src.startsWith("http://") ||
     src.startsWith("https://") ||
-    src.startsWith("data:") ||
+    /^data:/i.test(src) ||
     src.startsWith("blob:") ||
     src.startsWith("asset:") ||
     src.startsWith("media:") ||
@@ -81,6 +81,7 @@ export function isViewableSrc(src: string): boolean {
 export function normalizeMediaRef(pathOrUrl: string): string | null {
   const raw = (pathOrUrl ?? "").trim();
   if (!raw) return null;
+  if (/^data:/i.test(raw)) return raw;
   // Template placeholders from tool schemas (not real files).
   if (raw.includes("<") || raw.includes(">") || raw.includes("{") || raw.includes("}")) {
     return null;

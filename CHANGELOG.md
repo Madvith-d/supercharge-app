@@ -13,11 +13,14 @@ See `docs/llm-wiki/release.md`.
 
 ## [Unreleased]
 
-## [0.2.46] - 2026-10-01
+## [0.2.46] - 2026-10-02
 
-> **Highlight:** Startup does less filesystem work, and window geometry saves run in the background.
+> **Highlight:** CLI conversations appear automatically alongside App chats, including with custom providers.
+>
+> **中文 · 亮点：** CLI 对话自动显示在应用聊天列表中，自定义服务商也同样支持。
 
 ### Added
+- CLI conversations appear automatically, even when a custom provider is selected. Opening history keeps terminal conversations intact, and continuing creates a separate App copy.
 - Startup logs now help identify slow initialization steps.
 
 ### Changed
@@ -28,6 +31,21 @@ See `docs/llm-wiki/release.md`.
 ### Fixed
 - Windows minimize and maximize controls handle rapid clicks more reliably. Window-size updates no longer interrupt minimize or maximize transitions.
 - Remote projects no longer grant access to matching local folders.
+- Rewind and partial forks now commit the intended conversation boundary in the current CLI.
+
+**中文 · 新增**
+- CLI 对话自动显示，选择自定义服务商时也不例外。查看历史不会修改终端对话，继续聊天会创建独立的应用副本。
+- 启动日志现在可帮助定位初始化缓慢的步骤。
+
+**中文 · 变更**
+- 读取设置和启动时不再重复初始化文件目录或扫描项目文件夹。
+- 过期的外观文件在后台清理，不影响正在导入的内容。
+- 窗口大小和位置在后台保存。
+
+**中文 · 修复**
+- Windows 最小化和最大化按钮在快速点击时更加可靠。窗口尺寸更新不再干扰最小化或最大化过程。
+- 远程项目不再授予对同名本地文件夹的访问权限。
+- 回退和部分分支现在会在当前 CLI 中实际提交预期的对话截断位置。
 
 ## [0.2.45] - 2026-10-01
 

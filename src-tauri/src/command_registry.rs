@@ -110,6 +110,7 @@ pub fn app_invoke_handler(
         commands::session_set_workspace,
         // ── Session list/search & CLI session import ──
         commands::sessions_list,
+        crate::cli_history::cli_history_sync,
         commands::sessions_search,
         commands::cli_sessions_list,
         commands::cli_sessions_search,

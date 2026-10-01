@@ -17,7 +17,9 @@ import {
   isGeneralProject,
   projectDisplayName,
   type Project,
+  type SessionRow,
 } from "@/lib/app/sidebarModels";
+import { isExternalCliSession } from "@/lib/sessionCliSource";
 import { isActiveJsonSchema } from "@/lib/jsonSchema";
 import { canLiveParticipate } from "@/lib/multiWindow";
 import { isProjectFolderMissing } from "@/lib/projectPath";
@@ -66,6 +68,7 @@ export type SessionConnectHost = {
   setActiveProject: Dispatch<SetStateAction<Project | null>>;
   setExpandedProjects: Dispatch<SetStateAction<Record<string, boolean>>>;
   refreshSessions: () => void | Promise<void>;
+  findRow: (id: string) => SessionRow | null;
 };
 
 function emptyHost(): SessionConnectHost {
@@ -97,6 +100,7 @@ function emptyHost(): SessionConnectHost {
     setActiveProject: noop,
     setExpandedProjects: noop,
     refreshSessions: noop,
+    findRow: () => null,
   };
 }
 
@@ -144,7 +148,7 @@ export function useSessionConnect(opts: {
     async (
       forceOrOpts:
         | boolean
-        | { force?: boolean; sessionId?: string | null } = false,
+        | { force?: boolean; sessionId?: string | null; intent?: "send" } = false,
     ): Promise<string | null> => {
       const h = opts.hostRef.current;
       if (!canLiveParticipate(h.isSecondaryWindowRef.current)) {
@@ -155,6 +159,7 @@ export function useSessionConnect(opts: {
           ? {
               force: forceOrOpts,
               sessionId: undefined as string | null | undefined,
+              intent: undefined,
             }
           : forceOrOpts;
       const force = !!connectOpts.force;
@@ -162,6 +167,12 @@ export function useSessionConnect(opts: {
         connectOpts.sessionId !== undefined
           ? connectOpts.sessionId
           : h.session.sessionId;
+      const row = preferredId ? h.findRow(preferredId) : null;
+      if (
+        preferredId &&
+        (!row || isExternalCliSession(row)) &&
+        connectOpts.intent !== "send"
+      ) return null;
       const connectProject =
         h.activeProject && !isGeneralProject(h.activeProject)
           ? h.activeProject
@@ -412,6 +423,8 @@ export function useSessionConnect(opts: {
   const retryAgentConnect = useCallback(() => {
     const h = opts.hostRef.current;
     const sid = h.viewingSessionIdRef.current ?? h.session.sessionId;
+    const row = sid ? h.findRow(sid) : null;
+    if (sid && (!row || isExternalCliSession(row))) return;
     h.setLocalError(null);
     void (async () => {
       if (h.session.state === "connecting" || h.connecting) {

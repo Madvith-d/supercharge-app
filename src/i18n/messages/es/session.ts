@@ -111,6 +111,8 @@ export const esSession = {
   "session.move.ghostMany": "{n} chats",
   "session.deleteTitle": "Eliminar chat",
   "session.deleteConfirm": "¿Eliminar «{name}» de forma permanente? No se puede deshacer.",
+  "session.deleteExternalConfirm": "¿Quitar «{name}» de la aplicación? El historial original de CLI no se eliminará.",
+  "session.deleteExternalNote": "Los historiales externos de CLI solo se quitan de la aplicación. Sus archivos originales no se eliminarán.",
   "session.deleteManyTitle": "Eliminar chats",
   "session.deleteManyConfirm": "¿Eliminar {n} chats de forma permanente? No se puede deshacer.",
   "session.menu": "Menú de sesión",

@@ -208,16 +208,35 @@ const IMAGE_EXT_RE = IMAGE_EXTS.join("|");
 const VIDEO_EXT_RE = VIDEO_EXTS.join("|");
 const MEDIA_EXT_RE = `${IMAGE_EXT_RE}|${VIDEO_EXT_RE}`;
 
+/** Inline payloads are URLs, never filesystem paths or extension-bearing names. */
+export function isInlineAttachmentPath(path: string): boolean {
+  return /^data:/i.test(path);
+}
+
+export function inlineAttachmentMime(path: string): string | null {
+  if (!isInlineAttachmentPath(path)) return null;
+  const comma = path.indexOf(",");
+  if (comma < 0) return null;
+  return path.slice(5, comma).split(";", 1)[0].toLowerCase() || "text/plain";
+}
+
 export function isImagePath(path: string): boolean {
+  if (isInlineAttachmentPath(path)) return inlineAttachmentMime(path)?.startsWith("image/") ?? false;
   return (IMAGE_EXTS as readonly string[]).includes(pathExt(path));
 }
 
 export function isVideoPath(path: string): boolean {
+  if (isInlineAttachmentPath(path)) return inlineAttachmentMime(path)?.startsWith("video/") ?? false;
   return (VIDEO_EXTS as readonly string[]).includes(pathExt(path));
 }
 
+export function isAudioPath(path: string): boolean {
+  if (isInlineAttachmentPath(path)) return inlineAttachmentMime(path)?.startsWith("audio/") ?? false;
+  return ["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus"].includes(pathExt(path));
+}
+
 export function isMediaPath(path: string): boolean {
-  return isImagePath(path) || isVideoPath(path);
+  return isImagePath(path) || isVideoPath(path) || isAudioPath(path);
 }
 
 /**
@@ -732,7 +751,7 @@ export function buildInlineMediaPathMap(
 ): Record<string, string> {
   const map: Record<string, string> = {};
   for (const a of attachments ?? []) {
-    if (a.isDir || !isMediaPath(a.path)) continue;
+    if (a.isDir || isInlineAttachmentPath(a.path) || !isMediaPath(a.path)) continue;
     const abs = a.path;
     map[abs] = abs;
     map[pathBasename(abs)] = abs;
@@ -830,6 +849,7 @@ export function resolveInlineImageToken(
 export function isDisplayableAttachmentPath(path: string): boolean {
   const t = (path || "").trim();
   if (!t) return false;
+  if (isInlineAttachmentPath(t)) return inlineAttachmentMime(t) !== null;
   if (/^https?:\/\//i.test(t)) return true;
   if (isSiteRootAbsolutePath(t)) return false;
   // Fused media query keys (`t:/Users/…`) are not real attachment paths.
@@ -870,7 +890,7 @@ export function filterAttachmentsNotInlined(
   const out = attachments.filter((a) => {
     // Hide unopenable false extracts (paperclip that cannot preview).
     if (!isDisplayableAttachmentPath(a.path)) return false;
-    if (a.isDir || !isMediaPath(a.path)) return true;
+    if (a.isDir || isInlineAttachmentPath(a.path) || !isMediaPath(a.path)) return true;
     const name = pathBasename(a.path);
     const norm = a.path.replace(/\\/g, "/");
     const rel = mediaTailFromPath(norm);

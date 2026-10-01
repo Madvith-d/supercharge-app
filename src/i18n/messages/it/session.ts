@@ -111,6 +111,8 @@ export const itSession = {
   "session.move.ghostMany": "{n} chat",
   "session.deleteTitle": "Elimina chat",
   "session.deleteConfirm": "Eliminare definitivamente «{name}»? L’operazione non si può annullare.",
+  "session.deleteExternalConfirm": "Rimuovere «{name}» dall’app? La cronologia CLI originale non verrà eliminata.",
+  "session.deleteExternalNote": "Le cronologie CLI esterne vengono rimosse solo dall’app. I file originali non verranno eliminati.",
   "session.deleteManyTitle": "Elimina chat",
   "session.deleteManyConfirm": "Eliminare definitivamente {n} chat? L’operazione non si può annullare.",
   "session.menu": "Menu sessione",

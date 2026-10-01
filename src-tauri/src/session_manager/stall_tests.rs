@@ -51,6 +51,7 @@ fn streaming_session(now: Instant, mut patch: impl FnMut(&mut LiveSession)) -> L
             project_id: None,
             title: "Stall".into(),
             agent_session_id: Some("agent-1".into()),
+            cli_source: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             model_id: None,

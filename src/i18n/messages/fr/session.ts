@@ -111,6 +111,8 @@ export const frSession = {
   "session.move.ghostMany": "{n} conversations",
   "session.deleteTitle": "Supprimer la conversation",
   "session.deleteConfirm": "Supprimer définitivement « {name} » ? Irréversible.",
+  "session.deleteExternalConfirm": "Retirer « {name} » de l’application ? L’historique CLI d’origine ne sera pas supprimé.",
+  "session.deleteExternalNote": "Les historiques CLI externes sont retirés uniquement de l’application. Leurs fichiers d’origine ne seront pas supprimés.",
   "session.deleteManyTitle": "Supprimer les conversations",
   "session.deleteManyConfirm": "Supprimer définitivement {n} conversations ? Irréversible.",
   "session.menu": "Menu de session",

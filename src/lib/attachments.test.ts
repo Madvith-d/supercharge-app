@@ -12,6 +12,9 @@ import {
   mediaTailFromPath,
   isDisplayableAttachmentPath,
   isImagePath,
+  isAudioPath,
+  isInlineAttachmentPath,
+  inlineAttachmentMime,
   isMediaPath,
   isPlausibleLocalMediaAbs,
   isSoleLineAtAttachmentPath,
@@ -38,6 +41,30 @@ const dir: Attachment = {
 };
 
 describe("attachments", () => {
+  it.each([
+    ["data:image/png;base64,AA==", true, false, false],
+    ["DATA:IMAGE/JPEG;name=scan.dat;base64,AA==", true, false, false],
+    ["data:audio/wav;base64,AA==", false, true, false],
+    ["data:video/mp4;base64,AA==", false, false, true],
+    ["data:text/plain,looks-like.png", false, false, false],
+    ["data:application/octet-stream;name=photo.jpg;base64,AA==", false, false, false],
+  ])("classifies inline MIME without inspecting payload extensions: %s", (path, image, audio, video) => {
+    expect(isInlineAttachmentPath(path)).toBe(true);
+    expect(isDisplayableAttachmentPath(path)).toBe(true);
+    expect(isImagePath(path)).toBe(image);
+    expect(isAudioPath(path)).toBe(audio);
+    expect(isVideoPath(path)).toBe(video);
+    expect(isMediaPath(path)).toBe(image || audio || video);
+  });
+
+  it("keeps inline filenames without adding payloads to local path maps", () => {
+    const attachment = { path: "data:image/png;base64,AA==", name: "scan.png", isDir: false };
+    expect(inlineAttachmentMime("data:,hello")).toBe("text/plain");
+    expect(isDisplayableAttachmentPath("data:image/png;base64")).toBe(false);
+    expect(buildInlineMediaPathMap([attachment])).toEqual({});
+    expect(filterAttachmentsNotInlined("`scan.png`", [attachment])).toEqual([attachment]);
+  });
+
   it("dedupes by path", () => {
     const out = mergeAttachments([file], [{ ...file, name: "renamed" }, dir]);
     expect(out).toHaveLength(2);

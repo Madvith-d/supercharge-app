@@ -111,6 +111,8 @@ export const ukSession = {
   "session.move.ghostMany": "{n} чатів",
   "session.deleteTitle": "Видалити чат",
   "session.deleteConfirm": "Видалити «{name}» остаточно? Скасувати це неможливо.",
+  "session.deleteExternalConfirm": "Прибрати «{name}» із застосунку? Початкову історію CLI не буде видалено.",
+  "session.deleteExternalNote": "Зовнішні історії CLI видаляються лише із застосунку. Початкові файли не буде видалено.",
   "session.deleteManyTitle": "Видалити чати",
   "session.deleteManyConfirm": "Видалити {n} чатів остаточно? Скасувати це неможливо.",
   "session.menu": "Меню сесії",

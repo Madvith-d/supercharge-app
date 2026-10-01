@@ -2,7 +2,7 @@
  * Sidebar session tree: projects, orphans, multi-select bar.
  * Catalog paint lives here. Open/new-chat and UserMenu stay with the host.
  */
-import type { CSSProperties, Dispatch, MouseEvent, ReactNode, SetStateAction } from "react";
+import type { CSSProperties, Dispatch, MouseEvent, SetStateAction } from "react";
 import { useMemo } from "react";
 import { SidebarProjectsMoreMenu } from "@/components/SidebarProjectsMoreMenu";
 import { activeSpaceLabel } from "@/lib/projectSpaces";
@@ -113,7 +113,6 @@ export type WorkbenchSessionTreeProps = {
   onSidebarSessionRename: (s: { id: string }, title: string) => void;
   confirmBulkSetArchived: (archived: boolean) => void;
   deleteSessionsConfirm: (rows: SessionRow[]) => void;
-  sidebarCliImportCta?: ReactNode;
 };
 
 export function WorkbenchSessionTree(props: WorkbenchSessionTreeProps) {
@@ -167,7 +166,6 @@ export function WorkbenchSessionTree(props: WorkbenchSessionTreeProps) {
     onSidebarSessionMenu,
     onSidebarSessionRename,
     confirmBulkSetArchived,
-    sidebarCliImportCta,
     deleteSessionsConfirm,
   } = props;
 
@@ -427,7 +425,6 @@ export function WorkbenchSessionTree(props: WorkbenchSessionTreeProps) {
             {projects.length === 0 && (
               <div className="sidebar-empty">
                 {tr("sidebar.noProjects")}
-                {sidebarCliImportCta}
               </div>
             )}
 
@@ -857,7 +854,6 @@ export function WorkbenchSessionTree(props: WorkbenchSessionTreeProps) {
                   );
                 })()
               : null}
-              {historyOpen && projects.length > 0 ? sidebarCliImportCta : null}
             </div>
           </OverlayScroll>
 

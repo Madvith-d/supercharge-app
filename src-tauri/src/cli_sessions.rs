@@ -96,76 +96,8 @@ struct SummaryInfo {
 }
 
 /// List CLI agent sessions under the active SUPERCHARGE_HOME (respects session_data_mode).
-pub fn list_cli_sessions(session_data_mode: &str) -> Result<Vec<CliSessionSummary>, String> {
-    let home = resolve_agent_supercharge_home(session_data_mode);
-    let source_home = home.display().to_string();
-    let sessions = home.join("sessions");
-    if !sessions.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    // agent_session_id → app session id (first match wins).
-    let linked: std::collections::HashMap<String, String> = store::load_sessions_index()
-        .into_iter()
-        .filter_map(|s| {
-            let aid = s.agent_session_id.filter(|id| !id.is_empty())?;
-            Some((aid, s.id))
-        })
-        .collect();
-
-    let mut out = Vec::new();
-    let cwd_dirs = fs::read_dir(&sessions).map_err(|e| e.to_string())?;
-    for cwd_ent in cwd_dirs.flatten() {
-        let cwd_path = cwd_ent.path();
-        if !cwd_path.is_dir() {
-            continue;
-        }
-        let cwd_decoded =
-            percent_decode_component(cwd_path.file_name().and_then(|s| s.to_str()).unwrap_or(""));
-        let Ok(sid_dirs) = fs::read_dir(&cwd_path) else {
-            continue;
-        };
-        for sid_ent in sid_dirs.flatten() {
-            let dir = sid_ent.path();
-            if !dir.is_dir() {
-                continue;
-            }
-            let agent_id = dir
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            if agent_id.is_empty() || agent_id.starts_with('.') {
-                continue;
-            }
-            let summary_path = dir.join("summary.json");
-            if !summary_path.is_file() && !dir.join("chat_history.jsonl").is_file() {
-                continue;
-            }
-            let (title, cwd, updated, n) =
-                read_summary_bits(&summary_path, &cwd_decoded, &agent_id);
-            let app_session_id = linked.get(&agent_id).cloned();
-            out.push(CliSessionSummary {
-                already_linked: app_session_id.is_some(),
-                app_session_id,
-                agent_session_id: agent_id,
-                title,
-                cwd,
-                updated_at: updated,
-                dir: dir.display().to_string(),
-                num_messages: n,
-                source_home: source_home.clone(),
-                first_prompt: None,
-            });
-        }
-    }
-
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    // Cap list for UI.
-    if out.len() > 200 {
-        out.truncate(200);
-    }
-    Ok(out)
+pub fn list_cli_sessions(_session_data_mode: &str) -> Result<Vec<CliSessionSummary>, String> {
+    Ok(crate::cli_history::legacy::list())
 }
 
 /// Normalize a project / cwd path for equality (pure).
@@ -278,128 +210,9 @@ pub fn pick_latest_session_for_cwd<'a, T>(
 /// Soft-fails with `Ok(None)` when the path is empty or no session exists.
 pub fn find_latest_cli_session_for_cwd(
     project_path: &str,
-    session_data_mode: &str,
+    _session_data_mode: &str,
 ) -> Result<Option<CliSessionSummary>, String> {
-    let path = project_path.trim();
-    if path.is_empty() {
-        return Ok(None);
-    }
-
-    let home = resolve_agent_supercharge_home(session_data_mode);
-    let source_home = home.display().to_string();
-    let sessions = home.join("sessions");
-    if !sessions.is_dir() {
-        return Ok(None);
-    }
-
-    // agent_session_id → app session id (first match wins).
-    let linked: std::collections::HashMap<String, String> = store::load_sessions_index()
-        .into_iter()
-        .filter_map(|s| {
-            let aid = s.agent_session_id.filter(|id| !id.is_empty())?;
-            Some((aid, s.id))
-        })
-        .collect();
-
-    let mut candidates: Vec<CliSessionSummary> = Vec::new();
-
-    // Fast path: exact encoded cwd directory (CLI layout).
-    let encoded = crate::paths::percent_encode_path_component(path);
-    let encoded_norm = crate::paths::percent_encode_path_component(&normalize_cwd_path(path));
-    for enc in [encoded.as_str(), encoded_norm.as_str()] {
-        let cwd_dir = sessions.join(enc);
-        if !cwd_dir.is_dir() {
-            continue;
-        }
-        collect_sessions_under_cwd_dir(&cwd_dir, path, &source_home, &linked, &mut candidates);
-        if !candidates.is_empty() {
-            break;
-        }
-    }
-
-    // Fallback: scan all cwd folders; match by decoded name or summary cwd.
-    if candidates.is_empty() {
-        let cwd_dirs = fs::read_dir(&sessions).map_err(|e| e.to_string())?;
-        for cwd_ent in cwd_dirs.flatten() {
-            let cwd_path = cwd_ent.path();
-            if !cwd_path.is_dir() {
-                continue;
-            }
-            let cwd_decoded = percent_decode_component(
-                cwd_path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-            );
-            let folder_matches = cwd_paths_match(&cwd_decoded, path);
-            let mut under = Vec::new();
-            collect_sessions_under_cwd_dir(
-                &cwd_path,
-                &cwd_decoded,
-                &source_home,
-                &linked,
-                &mut under,
-            );
-            for row in under {
-                if folder_matches {
-                    candidates.push(row);
-                    continue;
-                }
-                let cwd_ok = row
-                    .cwd
-                    .as_deref()
-                    .map(|c| cwd_paths_match(c, path))
-                    .unwrap_or(false);
-                if cwd_ok {
-                    candidates.push(row);
-                }
-            }
-        }
-    }
-
-    candidates.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(candidates.into_iter().next())
-}
-
-fn collect_sessions_under_cwd_dir(
-    cwd_dir: &Path,
-    cwd_fallback: &str,
-    source_home: &str,
-    linked: &std::collections::HashMap<String, String>,
-    out: &mut Vec<CliSessionSummary>,
-) {
-    let Ok(sid_dirs) = fs::read_dir(cwd_dir) else {
-        return;
-    };
-    for sid_ent in sid_dirs.flatten() {
-        let dir = sid_ent.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let agent_id = dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        if agent_id.is_empty() || agent_id.starts_with('.') {
-            continue;
-        }
-        let summary_path = dir.join("summary.json");
-        if !summary_path.is_file() && !dir.join("chat_history.jsonl").is_file() {
-            continue;
-        }
-        let (title, cwd, updated, n) = read_summary_bits(&summary_path, cwd_fallback, &agent_id);
-        let app_session_id = linked.get(&agent_id).cloned();
-        out.push(CliSessionSummary {
-            already_linked: app_session_id.is_some(),
-            app_session_id,
-            agent_session_id: agent_id,
-            title,
-            cwd,
-            updated_at: updated,
-            dir: dir.display().to_string(),
-            num_messages: n,
-            source_home: source_home.to_string(),
-            first_prompt: None,
-        });
-    }
+    Ok(crate::cli_history::legacy::latest(project_path))
 }
 
 /// CLI `-c/--continue` for the App: find latest agent session for a project
@@ -446,27 +259,36 @@ pub fn search_cli_sessions(
     }
     let lim = clamp_search_limit(limit);
     let home = resolve_agent_supercharge_home(session_data_mode);
-    let source_home = home.display().to_string();
+    let source_home = fs::canonicalize(&home)
+        .unwrap_or_else(|_| home.clone())
+        .display()
+        .to_string();
+    let local = search_local_sessions(q, lim, session_data_mode)?;
+    if local.len() >= lim as usize {
+        return Ok(local);
+    }
 
-    // Prefer real CLI when a binary is available.
+    // Retain remote CLI hits while including every local history home.
     if let Some(path) = cli_path.filter(|p| p.is_file()) {
         match run_sessions_search_cli(path, &home, q, lim) {
             Ok(hits) if !hits.is_empty() => {
-                return Ok(enrich_search_hits(
-                    hits,
-                    session_data_mode,
-                    &source_home,
-                    "cli",
-                ));
+                let mut merged = local;
+                for hit in enrich_search_hits(hits, session_data_mode, &source_home, "cli") {
+                    if !merged.iter().any(|existing| {
+                        existing.agent_session_id == hit.agent_session_id
+                            && existing.source_home == hit.source_home
+                            && existing.dir == hit.dir
+                    }) {
+                        merged.push(hit);
+                    }
+                }
+                merged.truncate(lim as usize);
+                return Ok(merged);
             }
             Ok(_empty) => {
                 // CLI succeeded with zero hits — still try local first-prompt
                 // match (CLI may only search remote index / different store).
-                let local = search_local_sessions(q, lim, session_data_mode)?;
-                if !local.is_empty() {
-                    return Ok(local);
-                }
-                return Ok(Vec::new());
+                return Ok(local);
             }
             Err(e) => {
                 tracing::warn!(
@@ -478,7 +300,7 @@ pub fn search_cli_sessions(
         }
     }
 
-    search_local_sessions(q, lim, session_data_mode)
+    Ok(local)
 }
 
 /// Pure text parser for `supercharge sessions search` human output.
@@ -864,14 +686,17 @@ fn enrich_search_hits(
     source: &str,
 ) -> Vec<CliSessionSearchHit> {
     let local = list_cli_sessions(session_data_mode).unwrap_or_default();
-    let by_id: std::collections::HashMap<String, CliSessionSummary> = local
-        .into_iter()
-        .map(|s| (s.agent_session_id.clone(), s))
-        .collect();
+    let mut by_id = HashMap::<String, Option<CliSessionSummary>>::new();
+    for row in local.into_iter().filter(|s| s.source_home == source_home) {
+        by_id
+            .entry(row.agent_session_id.clone())
+            .and_modify(|entry| *entry = None)
+            .or_insert(Some(row));
+    }
 
     hits.into_iter()
         .map(|h| {
-            if let Some(loc) = by_id.get(&h.agent_session_id) {
+            if let Some(loc) = by_id.get(&h.agent_session_id).and_then(Option::as_ref) {
                 CliSessionSearchHit {
                     agent_session_id: h.agent_session_id,
                     title: if h.title.is_empty() {
@@ -1887,89 +1712,9 @@ pub fn import_cli_session(
     agent_session_id: &str,
     dir: Option<&str>,
     project_id: Option<String>,
-    session_data_mode: &str,
+    _session_data_mode: &str,
 ) -> Result<SessionMeta, String> {
-    let agent_session_id = validate_agent_session_id(agent_session_id)?;
-
-    // Already linked? Skip re-import and return the existing app session.
-    if let Some(existing) = store::load_sessions_index()
-        .into_iter()
-        .find(|s| s.agent_session_id.as_deref() == Some(agent_session_id))
-    {
-        return Ok(existing);
-    }
-    // Explicit one-id import may revive a previously deleted App link.
-    let _ = forget_deleted_cli_id(agent_session_id);
-
-    let dir = if let Some(d) = dir.filter(|s| !s.is_empty()) {
-        PathBuf::from(d)
-    } else {
-        crate::paths::find_agent_session_dir(agent_session_id, None, session_data_mode)
-            .ok_or_else(|| format!("CLI session dir not found for {agent_session_id}"))?
-    };
-    if !dir.is_dir() {
-        return Err(format!("not a directory: {}", dir.display()));
-    }
-
-    let summary_path = dir.join("summary.json");
-    let cwd_name = dir
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    let (title, cwd, _, _) = read_summary_bits(
-        &summary_path,
-        &percent_decode_component(cwd_name),
-        agent_session_id,
-    );
-
-    let history = dir.join("chat_history.jsonl");
-    let pairs = parse_chat_history_jsonl(&history)?;
-
-    // Prefer matching App project by path. Missing project folders from a
-    // real CLI cwd are added untrusted — user still confirms trust.
-    let project_id = project_id.or_else(|| {
-        let cwd = cwd.as_deref()?;
-        ensure_untrusted_project_for_cwd(cwd);
-        store::load_projects()
-            .into_iter()
-            .find(|p| cwd_paths_match(&p.path, cwd))
-            .map(|p| p.id)
-    });
-
-    let mut meta = store::create_session(project_id, Some(title), false)?;
-    meta.agent_session_id = Some(agent_session_id.to_string());
-    let now = Utc::now();
-    let msgs: Vec<ChatMessageStored> = pairs
-        .into_iter()
-        .enumerate()
-        .map(|(i, (role, content))| ChatMessageStored {
-            id: Uuid::new_v4().to_string(),
-            role,
-            content,
-            thought: None,
-            created_at: now + chrono::Duration::milliseconds(i as i64),
-            is_error: false,
-            attachments: None,
-            marker: None,
-        })
-        .collect();
-    store::save_messages(&meta.id, &msgs)?;
-    meta.updated_at = now;
-    // Persist agent_session_id link.
-    let sid = meta.id.clone();
-    let agent_session_id = meta.agent_session_id.clone();
-    if let Some(updated) = store::update_sessions_index(move |list| {
-        let Some(row) = list.iter_mut().find(|s| s.id == sid) else {
-            return Ok(None);
-        };
-        row.agent_session_id = agent_session_id;
-        row.updated_at = now;
-        Ok(Some(row.clone()))
-    })? {
-        meta = updated;
-    }
-    Ok(meta)
+    crate::cli_history::legacy::import(agent_session_id, dir, project_id)
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -2071,24 +1816,10 @@ pub fn forget_app_linked_cli_session(
 
 /// Import all not-yet-linked CLI sessions (capped).
 pub fn import_all_cli_sessions(
-    session_data_mode: &str,
+    _session_data_mode: &str,
     limit: usize,
 ) -> Result<Vec<SessionMeta>, String> {
-    let list = list_cli_sessions(session_data_mode)?;
-    let mut imported = Vec::new();
-    for s in list
-        .into_iter()
-        .filter(|s| !s.already_linked)
-        .filter(|s| !is_deleted_cli_id(&s.agent_session_id))
-        .filter(|s| !should_skip_bulk_cli_import(&s.title, s.cwd.as_deref(), s.num_messages))
-        .take(limit)
-    {
-        match import_cli_session(&s.agent_session_id, Some(&s.dir), None, session_data_mode) {
-            Ok(m) => imported.push(m),
-            Err(e) => tracing::warn!("cli import skip {}: {e}", s.agent_session_id),
-        }
-    }
-    Ok(imported)
+    crate::cli_history::legacy::import_all(limit, &load_deleted_cli_ids())
 }
 
 /// Reject empty / traversal-looking agent session ids before any path join.
@@ -2838,7 +2569,14 @@ mod tests {
         let imported =
             import_cli_session(agent_id, Some(dir.to_str().unwrap()), None, "independent")
                 .expect("import");
-        assert_eq!(imported.agent_session_id.as_deref(), Some(agent_id));
+        assert!(imported.agent_session_id.is_none());
+        assert_eq!(
+            imported
+                .cli_source
+                .as_ref()
+                .map(|source| source.agent_session_id.as_str()),
+            Some(agent_id)
+        );
 
         forget_app_linked_cli_session(agent_id, "independent").expect("forget cli");
         crate::store::delete_session(&imported.id).expect("delete app");
@@ -2846,14 +2584,20 @@ mod tests {
         assert!(!dir.exists(), "CLI dir should be gone");
         let again = import_all_cli_sessions("independent", 50).expect("import all");
         assert!(
-            again.is_empty(),
+            !again.iter().any(|row| row
+                .cli_source
+                .as_ref()
+                .is_some_and(|source| source.agent_session_id == agent_id)),
             "bulk import resurrected {:?}",
             again.iter().map(|s| s.id.clone()).collect::<Vec<_>>()
         );
         assert!(
             crate::store::load_sessions_index()
                 .iter()
-                .all(|s| s.agent_session_id.as_deref() != Some(agent_id)),
+                .all(|s| s.agent_session_id.as_deref() != Some(agent_id)
+                    && s.cli_source
+                        .as_ref()
+                        .is_none_or(|source| source.agent_session_id != agent_id)),
             "index grew a new row for the deleted agent id"
         );
 
@@ -2884,7 +2628,10 @@ mod tests {
 
         let again = import_all_cli_sessions("independent", 50).expect("import all");
         assert!(
-            again.is_empty(),
+            !again.iter().any(|row| row
+                .cli_source
+                .as_ref()
+                .is_some_and(|source| source.agent_session_id == agent_id)),
             "tombstone should block resurrection, got {}",
             again.len()
         );
@@ -2921,7 +2668,20 @@ mod tests {
         assert_eq!(row.app_session_id.as_deref(), Some(imported.id.as_str()));
 
         let again = import_all_cli_sessions("independent", 50).expect("import all");
-        assert!(again.is_empty());
+        assert!(!again.iter().any(|row| row
+            .cli_source
+            .as_ref()
+            .is_some_and(|source| source.agent_session_id == agent_id)));
+        assert_eq!(
+            crate::store::load_sessions_index()
+                .iter()
+                .filter(|row| row
+                    .cli_source
+                    .as_ref()
+                    .is_some_and(|source| source.agent_session_id == agent_id))
+                .count(),
+            1
+        );
 
         let _ = crate::store::delete_session(&imported.id);
         std::env::remove_var("GROK_APP_HOME");

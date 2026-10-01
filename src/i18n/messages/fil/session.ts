@@ -111,6 +111,8 @@ export const filSession = {
   "session.move.ghostMany": "{n} chat",
   "session.deleteTitle": "Burahin ang chat",
   "session.deleteConfirm": "Permanenteng burahin ang “{name}”? Hindi ito mababawi.",
+  "session.deleteExternalConfirm": "Alisin ang “{name}” sa app? Hindi mabubura ang orihinal na kasaysayan ng CLI.",
+  "session.deleteExternalNote": "Sa app lang aalisin ang mga panlabas na kasaysayan ng CLI. Hindi mabubura ang mga orihinal na file.",
   "session.deleteManyTitle": "Burahin ang mga chat",
   "session.deleteManyConfirm": "Burahin nang permanente ang {n} chat? Hindi ito mababawi.",
   "session.menu": "Menu ng session",

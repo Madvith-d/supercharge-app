@@ -31,7 +31,8 @@ import * as api from "@/lib/api";
 import { registerGateAndMetaSubscriptions } from "./sessionHostGateSubscriptions";
 import { isMirrorClient } from "@/lib/mirrorTransport";
 import { planForkTrimmedFollowUp } from "@/lib/sessionFork";
-import { projectTrimmedJournalToChat } from "@/lib/sessionJournalHydrate";
+import { beginSourceJournalRead, projectTrimmedJournalToChat } from "@/lib/sessionJournalHydrate";
+import { isExternalCliSession } from "@/lib/sessionCliSource";
 import {
   applyContextCompact,
   applyGeneratedImage,
@@ -413,6 +414,7 @@ export function useSessionHostEvents(ctx: SessionHostEventsCtx) {
         const applyResolvedRelativeMedia = (
           sid: string | null | undefined,
           rows: ChatMessage[],
+          canApply?: () => boolean,
         ) => {
           if (!sid) return;
           const rels = collectSessionRelativeMediaRefs(rows);
@@ -423,6 +425,7 @@ export function useSessionHostEvents(ctx: SessionHostEventsCtx) {
               if (
                 cancelled ||
                 !list.length ||
+                (canApply && !canApply()) ||
                 c.viewingSessionIdRef.current !== sid
               ) {
                 return;
@@ -451,15 +454,30 @@ export function useSessionHostEvents(ctx: SessionHostEventsCtx) {
          * painted). Empty-body-only retry left mid-status text stuck until the
          * user switched sessions and remounted from disk.
          */
+        const journalRequests = new Map<string, number>();
+        const sourceCanRefresh = (sid: string) =>
+          isExternalCliSession(c.sessionsRef.current.find((row) => row.id === sid)) &&
+          !isSessionBusy(c.liveMapRef.current[sid]?.state) &&
+          !(c.liveHostRef.current?.sessionId === sid && isSessionBusy(c.liveHostRef.current.state));
         const scheduleJournalRehydrate = (
           sid: string,
           attempt: number,
-          opts?: { clearStreaming?: boolean },
+          opts?: { clearStreaming?: boolean; retry?: boolean; sourceOnly?: boolean },
         ) => {
+          if (opts?.sourceOnly && !sourceCanRefresh(sid)) return;
+          const request = (journalRequests.get(sid) ?? 0) + 1;
+          journalRequests.set(sid, request);
+          const latestSourceRead = opts?.sourceOnly ? beginSourceJournalRead(sid) : () => true;
+          const cachedAtRead = c.messagesBySessionRef.current.get(sid);
           void api
             .sessionMessages(sid, { reconcile: JOURNAL_REHYDRATE_RECONCILE })
             .then((stored) => {
-              if (cancelled || c.viewingSessionIdRef.current !== sid) return;
+              if (
+                cancelled || c.viewingSessionIdRef.current !== sid ||
+                journalRequests.get(sid) !== request || !latestSourceRead() ||
+                (opts?.sourceOnly && (!sourceCanRefresh(sid) ||
+                  c.messagesBySessionRef.current.get(sid) !== cachedAtRead))
+              ) return;
               const hostState =
                 c.liveMapRef.current[sid]?.state ??
                 (c.liveHostRef.current?.sessionId === sid
@@ -481,10 +499,10 @@ export function useSessionHostEvents(ctx: SessionHostEventsCtx) {
               const base = shouldClear
                 ? settleStreamingOnHostReady(cached)
                 : cached;
-              // Empty cache → journal is sole source (openSession may race-write).
-              // Non-empty → lift longer journal tails into this session only.
+              // External history replaces cache, including rewinds and empty journals.
+              // App-owned journals only lift longer tails into this session.
               let next =
-                base.length === 0
+                opts?.sourceOnly || base.length === 0
                   ? woven
                   : upgradeMessagesFromJournal(base, woven);
               // Lift may have filled the queued pending from disk. Settle
@@ -503,9 +521,12 @@ export function useSessionHostEvents(ctx: SessionHostEventsCtx) {
               // truncated stream. Apply must run post-rehydrate for the
               // *viewed* session too (stream `done` alone is not enough).
               void c.tryApplyAutomationFromSession(sid);
-              applyResolvedRelativeMedia(sid, next);
+              applyResolvedRelativeMedia(sid, next, opts?.sourceOnly
+                ? () => latestSourceRead() && sourceCanRefresh(sid) && journalRequests.get(sid) === request &&
+                    c.messagesBySessionRef.current.get(sid) === next
+                : undefined);
               const gap = JOURNAL_REHYDRATE_RETRY_GAPS_MS[attempt];
-              if (gap != null) {
+              if (gap != null && opts?.retry !== false) {
                 window.setTimeout(() => {
                   if (!cancelled) {
                     scheduleJournalRehydrate(sid, attempt + 1, opts);
@@ -611,6 +632,25 @@ export function useSessionHostEvents(ctx: SessionHostEventsCtx) {
             ),
           );
         }
+
+        let historyRefreshTimer: number | undefined;
+        cleanups.push(() => window.clearTimeout(historyRefreshTimer));
+        track(
+          listenWithRetry<{ reason?: string; sessionId?: string }>(
+            "sessions://changed",
+            (p) => {
+              if (cancelled || p?.reason !== "cli_history_sync") return;
+              const sid = c.viewingSessionIdRef.current;
+              if (!sid || (p.sessionId && p.sessionId !== sid) || !sourceCanRefresh(sid)) return;
+              journalRequests.set(sid, (journalRequests.get(sid) ?? 0) + 1);
+              window.clearTimeout(historyRefreshTimer);
+              historyRefreshTimer = window.setTimeout(() => {
+                if (cancelled || c.viewingSessionIdRef.current !== sid) return;
+                scheduleJournalRehydrate(sid, 0, { retry: false, sourceOnly: true });
+              }, 150);
+            },
+          ),
+        );
 
         // Host finished a turn but App journal may still miss the final
         // assistant body (stream dropped / sticky finish). Rehydrate so UI
