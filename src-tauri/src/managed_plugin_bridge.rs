@@ -4,7 +4,10 @@
 //! separately scoped read/execute credential is written only to an owner-only
 //! file consumed by the stdio bridge. Public DTOs never contain either secret.
 
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
