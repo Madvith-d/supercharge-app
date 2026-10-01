@@ -341,7 +341,7 @@ pub fn discover(roots: &[PathBuf]) -> Vec<DiscoveredSession> {
             }
         }
     }
-    out.sort_by(|a, b| a.source.key().cmp(&b.source.key()));
+    out.sort_by_cached_key(|entry| entry.source.key());
     out
 }
 

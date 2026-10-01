@@ -348,13 +348,13 @@ fn invalid(message: impl Into<String>) -> std::io::Error {
 }
 
 fn private_dir(path: &Path) -> std::io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        fs::DirBuilder::new().mode(0o700).create(path)
     }
-    builder.create(path)
+    #[cfg(not(unix))]
+    fs::create_dir(path)
 }
 
 fn child_dir(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
