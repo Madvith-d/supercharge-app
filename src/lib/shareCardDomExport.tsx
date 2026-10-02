@@ -66,6 +66,8 @@ function ShareMessageBody({
       copyPath: tr("attach.copyPath"),
       copyImage: tr("attach.copyImage"),
       addToComposer: tr("attach.addToComposer"),
+      mediaLoadError: tr("media.loadError"),
+      mediaLoading: tr("media.loading"),
     }),
     [tr],
   );

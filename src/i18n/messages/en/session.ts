@@ -111,6 +111,8 @@ export const enSession = {
   "session.move.ghostMany": "{n} chats",
   "session.deleteTitle": "Delete chat",
   "session.deleteConfirm": 'Delete “{name}” permanently? This cannot be undone.',
+  "session.deleteExternalConfirm": "Remove “{name}” from the app? The original CLI history will not be deleted.",
+  "session.deleteExternalNote": "External CLI histories are removed from the app only. Their original files will not be deleted.",
   "session.deleteManyTitle": "Delete chats",
   "session.deleteManyConfirm": "Delete {n} chats permanently? This cannot be undone.",
   "session.menu": "Session menu",

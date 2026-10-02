@@ -3,6 +3,7 @@
  * Extracted from AppWorkbench (residual-appworkbench).
  */
 import type { MessageKey } from "@/i18n";
+import type { CliSessionSource } from "@/lib/sessionCliSource";
 import { normalizeProjectColor } from "@/lib/projectColor";
 import { sanitizeExtraRules } from "@/lib/sessionExtraRules";
 import { normalizeMaxAgentTurns } from "@/lib/sessionMaxAgentTurns";
@@ -95,6 +96,8 @@ export interface SessionRow {
   systemPromptOverride?: string | null;
   /** Linked Grok agent session id (for CLI `--fork-session` / session/load). */
   agentSessionId?: string | null;
+  /** External histories remain live projections until deliberate continuation. */
+  cliSource?: CliSessionSource | null;
 }
 
 /** Normalize sessions_list / create rows into sidebar SessionRow shape. */
@@ -123,6 +126,7 @@ export function normalizeSessionRow(
     worktreeBranch,
     isWorktreeSession,
     agentSessionId,
+    cliSource: x.cliSource ?? null,
   };
 }
 

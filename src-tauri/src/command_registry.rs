@@ -112,6 +112,7 @@ pub fn app_invoke_handler(
         commands::session_set_workspace,
         // ── Session list/search & CLI session import ──
         commands::sessions_list,
+        crate::cli_history::cli_history_sync,
         commands::sessions_search,
         commands::cli_sessions_list,
         commands::cli_sessions_search,
@@ -235,9 +236,15 @@ pub fn app_invoke_handler(
         commands::mcp_doctor,
         // ── Standalone Plugin API (desktop-only authenticated adapter) ──
         commands::plugin_api_status,
+        commands::plugin_api_catalog,
         commands::plugin_api_connect,
         commands::plugin_api_disconnect,
         commands::plugin_api_request,
+        commands::plugin_api_bridge_status,
+        commands::plugin_api_bridge_apply,
+        commands::plugin_api_bridge_retry,
+        commands::plugin_api_bridge_verify,
+        commands::plugin_api_bridge_remove,
         // ── Plugins & plugin MCP auth ──
         commands::plugins_list,
         commands::plugin_enable,

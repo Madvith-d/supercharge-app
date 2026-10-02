@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "id": "vectra-echo",
+      "name": "Echo MCP",
+      "version": "1.0.0",
+      "description": "A local, non-destructive echo tool for verifying an agent's MCP connection.",
+      "source": {
+        "type": "archive",
+        "url": "https://raw.githubusercontent.com/iotserver24/supercharge-app/379e0d2789ac918e327e5ef1fef5cc2991a431a7/public/managed-mcp/vectra-echo-1.0.0.tar.gz",
+        "sha256": "a0c6be6c2f292c1a1ecdcc55056147d1dd232b58c76522e77ad44016ee7c0072"
+      }
+    }
+  ]
+}

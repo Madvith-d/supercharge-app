@@ -1,5 +1,6 @@
 /** Merged de message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { deCore } from "./core";
 import { deSidebar } from "./sidebar";
 import { deProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const de: Record<MessageKey, string> = {
   ...deCore,
   ...updateMessages["de"],
+  ...pluginApiMessages.de,
   ...deSidebar,
   ...deProject,
   ...deSession,

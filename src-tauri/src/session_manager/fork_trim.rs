@@ -4,7 +4,7 @@
 pub enum ChildTrimPlan {
     /// Full fork or journal-only: nothing to rewind.
     Skip,
-    /// session/fork returned resumed=true and a cut index is armed.
+    /// Exclusive native boundary; the stored/UI cut remains inclusive.
     RewindChild { prompt_index: u32 },
     /// Fork fell through to session/new; journal already truncated → bootstrap.
     Bootstrap,
@@ -12,10 +12,27 @@ pub enum ChildTrimPlan {
 
 pub fn child_trim_plan(rewind_index: Option<u32>, open_resumed: bool) -> ChildTrimPlan {
     match rewind_index {
-        Some(prompt_index) if open_resumed => ChildTrimPlan::RewindChild { prompt_index },
+        Some(through_index) if open_resumed => {
+            match crate::store::inclusive_user_prompt_exec_index(through_index) {
+                Ok(prompt_index) => ChildTrimPlan::RewindChild { prompt_index },
+                Err(_) => ChildTrimPlan::Bootstrap,
+            }
+        }
         Some(_) => ChildTrimPlan::Bootstrap,
         None => ChildTrimPlan::Skip,
     }
+}
+
+/// Validate a pending native copy's UI cut before loading or rewinding it.
+pub fn pending_child_rewind_exec_index(
+    meta: &crate::store::SessionMeta,
+) -> Result<Option<u32>, String> {
+    meta.fork_rewind_prompt_index
+        .map(|through_index| {
+            crate::store::ensure_rewind_prompt_mapping(meta)?;
+            crate::store::inclusive_user_prompt_exec_index(through_index)
+        })
+        .transpose()
 }
 
 /// Result of the rewind-fail journal fail-safe.
@@ -33,11 +50,14 @@ pub fn need_bootstrap_after_rewind_fail(after_len: usize) -> bool {
     after_len > 0
 }
 
-/// Re-cut an inflated child journal after rewind fails, then decide bootstrap.
+/// Re-cut after a failed exclusive native boundary, then decide bootstrap.
 pub fn apply_child_rewind_fail_safe(
     session_id: &str,
-    through_user_prompt_index: u32,
+    exclusive_prompt_index: u32,
 ) -> Result<ChildRewindFailSafe, String> {
+    let through_user_prompt_index = exclusive_prompt_index
+        .checked_sub(1)
+        .ok_or("partial fork rewind boundary must retain at least one turn")?;
     let (before_len, after_len, persisted) =
         crate::store::retruncate_child_journal_to_cut(session_id, through_user_prompt_index)?;
     Ok(ChildRewindFailSafe {
@@ -85,11 +105,54 @@ mod tests {
     fn trim_plan_rewinds_only_resumed_partial() {
         assert_eq!(
             child_trim_plan(Some(2), true),
-            ChildTrimPlan::RewindChild { prompt_index: 2 }
+            ChildTrimPlan::RewindChild { prompt_index: 3 }
         );
         assert_eq!(child_trim_plan(Some(2), false), ChildTrimPlan::Bootstrap);
         assert_eq!(child_trim_plan(None, true), ChildTrimPlan::Skip);
         assert_eq!(child_trim_plan(None, false), ChildTrimPlan::Skip);
+        assert_eq!(
+            child_trim_plan(Some(0), true),
+            ChildTrimPlan::RewindChild { prompt_index: 1 }
+        );
+        assert_eq!(
+            child_trim_plan(Some(u32::MAX), true),
+            ChildTrimPlan::Bootstrap
+        );
+    }
+
+    #[test]
+    fn pending_native_cut_is_exclusive_and_rejects_unmapped_cli_history() {
+        let mut meta: crate::store::SessionMeta = serde_json::from_value(serde_json::json!({
+            "id": "child", "title": "child", "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z", "forkRewindPromptIndex": 0
+        }))
+        .unwrap();
+        assert_eq!(pending_child_rewind_exec_index(&meta), Ok(Some(1)));
+        meta.fork_rewind_prompt_index = Some(u32::MAX);
+        assert!(pending_child_rewind_exec_index(&meta).is_err());
+        meta.cli_source = Some(crate::cli_history::CliSessionSource {
+            source_home: "/fixture".into(),
+            relative_dir: "sessions/workspace/agent".into(),
+            agent_session_id: "agent".into(),
+            cwd: None,
+            title: None,
+            updated_at: None,
+            revision: String::new(),
+            app_owned: true,
+        });
+        meta.fork_rewind_prompt_index = Some(0);
+        assert!(pending_child_rewind_exec_index(&meta)
+            .unwrap_err()
+            .contains("Cannot safely map"));
+        meta.fork_rewind_prompt_index = None;
+        assert_eq!(pending_child_rewind_exec_index(&meta), Ok(None));
+    }
+
+    #[test]
+    fn fail_safe_rejects_zero_boundary_before_touching_the_journal() {
+        assert!(apply_child_rewind_fail_safe("missing-child", 0)
+            .unwrap_err()
+            .contains("retain at least one turn"));
     }
 
     #[test]
@@ -172,7 +235,13 @@ mod tests {
         replace_messages(&child.id, &parent_msgs).expect("inflate");
         assert_eq!(load_messages(&child.id).len(), 16);
 
-        let fs = apply_child_rewind_fail_safe(&child.id, 4).expect("fail-safe");
+        let ChildTrimPlan::RewindChild { prompt_index } =
+            child_trim_plan(child.fork_rewind_prompt_index, true)
+        else {
+            panic!("partial fork must rewind");
+        };
+        assert_eq!(prompt_index, 5);
+        let fs = apply_child_rewind_fail_safe(&child.id, prompt_index).expect("fail-safe");
         assert_eq!(fs.before_len, 16);
         assert_eq!(fs.after_len, 10);
         assert!(fs.persisted);

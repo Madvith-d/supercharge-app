@@ -163,6 +163,7 @@ describe("pluginRecommended", () => {
     expect(resolveExtensionsTabId("market")).toBe("plugins");
     expect(resolveExtensionsTabId("plugins")).toBe("plugins");
     expect(resolveExtensionsTabId("mcp")).toBe("mcp");
+    expect(resolveExtensionsTabId("managed-mcp")).toBe("managed-mcp");
     expect(resolveExtensionsTabId("apps")).toBe("plugins");
     expect(resolveExtensionsTabId(null)).toBe("plugins");
   });

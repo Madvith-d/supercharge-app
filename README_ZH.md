@@ -9,7 +9,7 @@ Credit: original desktop workbench by [RongleCat](https://github.com/RongleCat).
 ## 上游贡献者
 
 <!-- CONTRIBUTORS:START -->
-感谢所有为 Grok App 做出贡献的人！以下为 GitHub 仓库全部人类贡献者（按 commits 降序，2026-10-01 更新）。
+感谢所有为 Grok App 做出贡献的人！以下为 GitHub 仓库全部人类贡献者（按 commits 降序，2026-10-02 更新）。
 
 <p align="center">
   <a href="https://github.com/RongleCat" title="RongleCat"><img src="https://github.com/RongleCat.png?size=96" width="72" height="72" alt="RongleCat" style="border-radius:50%" /></a>

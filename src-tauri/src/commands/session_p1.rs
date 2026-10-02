@@ -515,9 +515,9 @@ pub fn open_http_url(url: &str) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn projects_list() -> Result<Vec<Project>, String> {
-    tauri::async_runtime::spawn_blocking(store::load_projects)
+    tokio::task::spawn_blocking(store::load_projects)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("projects_list join: {e}"))
 }
 
 /// Default cwd for chats without a bound project folder (`workspaces/general`).
@@ -651,7 +651,9 @@ pub async fn project_archive_sessions(id: String) -> Result<usize, String> {
 
 #[tauri::command]
 pub async fn sessions_list() -> Result<Vec<SessionMeta>, String> {
-    Ok(store::load_sessions_index())
+    tauri::async_runtime::spawn_blocking(store::load_sessions_index)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Scan App journal messages for case-insensitive content matches.
@@ -675,7 +677,8 @@ pub async fn sessions_search(
 #[tauri::command]
 pub async fn cli_sessions_list() -> Result<Vec<crate::cli_sessions::CliSessionSummary>, String> {
     let mode = store::load_settings_async().await.session_data_mode;
-    crate::cli_sessions::list_cli_sessions(&mode)
+    tauri::async_runtime::spawn_blocking(move || crate::cli_sessions::list_cli_sessions(&mode))
+        .await.map_err(|e| e.to_string())?
 }
 
 /// Search CLI sessions via `supercharge sessions search` (summaries + first prompts).
@@ -707,7 +710,9 @@ pub async fn cli_session_import(
     project_id: Option<String>,
 ) -> Result<SessionMeta, String> {
     let mode = store::load_settings_async().await.session_data_mode;
-    crate::cli_sessions::import_cli_session(&agent_session_id, dir.as_deref(), project_id, &mode)
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::cli_sessions::import_cli_session(&agent_session_id, dir.as_deref(), project_id, &mode)
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// Find the most recent CLI agent session for a project path (CLI `-c/--continue`).
@@ -918,6 +923,7 @@ pub async fn session_delete(
     let agent_id = store::load_sessions_index()
         .into_iter()
         .find(|s| s.id == id)
+        .filter(|m| m.cli_source.is_none())
         .and_then(|m| m.agent_session_id)
         .filter(|s| !s.trim().is_empty());
     let mode = store::load_settings_async().await.session_data_mode;
@@ -935,7 +941,13 @@ pub async fn session_delete(
         .await;
     }
 
-    store::delete_session(&id)?;
+    tauri::async_runtime::spawn_blocking(move || store::delete_session(&id))
+        .await
+        .map_err(|e| e.to_string())??;
+    {
+        use tauri::Emitter;
+        let _ = app.emit("sessions://changed", serde_json::json!({"reason": "session_delete"}));
+    }
     Ok(())
 }
 
@@ -1207,6 +1219,9 @@ pub async fn session_messages(
     let do_reconcile = reconcile.unwrap_or(true);
     // Disk + optional full jsonl parse must not block the async runtime.
     tauri::async_runtime::spawn_blocking(move || {
+        if let Some(messages) = crate::cli_history::read_messages(&id)? {
+            return Ok(messages);
+        }
         if do_reconcile {
             let _ = crate::cli_sessions::try_reconcile_linked_session(&id);
         }

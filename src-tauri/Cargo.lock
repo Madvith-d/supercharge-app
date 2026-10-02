@@ -4704,7 +4704,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "supercharge-app"
-version = "0.2.45"
+version = "0.2.47"
 dependencies = [
  "arboard",
  "async-stream",
@@ -5212,8 +5212,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-window-state"
 version = "2.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73736611e14142408d15353e21e3cca2f12a3cfb523ad0ce85999b6d2ef1a704"
 dependencies = [
  "bitflags 2.13.1",
  "log",
@@ -5221,6 +5219,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-plugin",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 

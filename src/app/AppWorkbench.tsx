@@ -84,8 +84,6 @@ import {
   resumeGateClock,
 } from "@/lib/gateClock";
 import { WallpaperMediaLayer } from "@/components/WallpaperMediaLayer";
-import { SidebarCliImportCta } from "@/components/SidebarCliImportCta";
-import { useCliCallLogImport } from "@/hooks/useCliCallLogImport";
 import {
   DEFAULT_LAYOUT,
   SIDEBAR_DEFAULT_WIDTH,
@@ -475,6 +473,7 @@ import {
   isWorktreeNameCollisionError,
   resolveForkAgentCheckbox,
   resolveForkAgentSession,
+  resolveForkSourceAgentId,
   resolveSessionForkSoftFail,
   softFailKindFromRestoreGate,
 } from "@/lib/sessionFork";
@@ -665,6 +664,7 @@ import { useComposerSend } from "@/hooks/useComposerSend";
 import { useComposerEndPad } from "@/hooks/useComposerEndPad";
 import { useRewindComposerRestore } from "@/hooks/useRewindComposerRestore";
 import { useSessionCatalog } from "@/hooks/useSessionCatalog";
+import { isExternalCliSession, sessionDeleteConfirmation } from "@/lib/sessionCliSource";
 import {
   createSessionNavHost,
   useSessionNavigation,
@@ -2310,18 +2310,13 @@ export function AppWorkbench() {
       });
       try {
         await mirrorEnsureTransport();
-        const [p, s, settings, modelsRes] = await Promise.all([
+        const [p, , settings, modelsRes] = await Promise.all([
           api.projectsList().catch(() => []),
-          api.sessionsList().catch(() => []),
+          refreshSessions(),
           api.settingsGet().catch(() => null),
           api.modelsListAvailable().catch(() => null),
         ]);
         setProjects(mapProjectsList(p as Project[]));
-        setSessions(
-          (s as Array<Parameters<typeof mapSessionListRow>[0]>).map(
-            mapSessionListRow,
-          ),
-        );
         void api
           .generalWorkspacePath()
           .then((path) => setGeneralWorkspacePath(path || null))
@@ -2386,7 +2381,7 @@ export function AppWorkbench() {
       const settingsP = api.settingsGet();
       const cliP = api.probeCli();
       const projectsP = api.projectsList();
-      const sessionsP = api.sessionsList();
+      const sessionsP = refreshSessions();
       const modelsP = api.modelsListAvailable().catch(() => null);
 
       // Never hang forever on a stuck Host probe / IPC (was: infinite "Checking…").
@@ -2472,22 +2467,16 @@ export function AppWorkbench() {
       }
 
       // Phase 2 — workbench data (does not block gate chrome).
-      const [p, s, modelsRes] = await Promise.all([
+      const [p, , modelsRes] = await Promise.all([
         projectsP,
         sessionsP,
         modelsP,
       ]);
       setProjects(mapProjectsList(p as Project[]));
-      setSessions(
-        (s as Array<Parameters<typeof mapSessionListRow>[0]>).map(
-          mapSessionListRow,
-        ),
-      );
       void api
         .generalWorkspacePath()
         .then((path) => setGeneralWorkspacePath(path || null))
         .catch(() => {});
-      void api.trayRefresh();
       const catalog: ModelOption[] =
         modelsRes?.models?.length
           ? modelsRes.models.map((m) => {
@@ -2755,7 +2744,8 @@ export function AppWorkbench() {
    */
   const tryApplyAutomationFromSession = useCallback(
     async (sessionId: string) => {
-      if (!sessionId) return;
+      const row = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!row || isExternalCliSession(row)) return;
 
       const msgs = messagesBySessionRef.current.get(sessionId) ?? [];
       let lastAssistantIdx = -1;
@@ -3081,6 +3071,7 @@ export function AppWorkbench() {
     connectHost.setActiveProject = setActiveProject;
     connectHost.setExpandedProjects = setExpandedProjects;
     connectHost.refreshSessions = refreshSessions;
+    connectHost.findRow = (id) => sessionsRef.current.find((s) => s.id === id) ?? null;
     const host = sessionNavHostRef.current;
     host.chrome.goToChat = () => {
       setMainPane("chat");
@@ -3100,6 +3091,8 @@ export function AppWorkbench() {
       hint || projects.find((p) => p.id === s.projectId) || null;
     host.catalog.setActiveProject = setActiveProject;
     host.catalog.markScheduled = (sessionId) => {
+      const source = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!source || isExternalCliSession(source)) return;
       setSessions((list) =>
         list.map((row) =>
           row.id === sessionId ? { ...row, scheduled: true } : row,
@@ -3116,7 +3109,7 @@ export function AppWorkbench() {
     host.catalog.listLiveIds = () =>
       sessionsRef.current.filter((s) => !s.archived).map((s) => s.id);
     host.catalog.findRow = (id) =>
-      sessionsRef.current.find((s) => s.id === id && !s.archived) ?? null;
+      sessionsRef.current.find((s) => s.id === id) ?? null;
     host.catalog.clearUnread = (sessionId) => {
       applyClearSessionUnread(sessionId);
     };
@@ -5066,12 +5059,7 @@ export function AppWorkbench() {
       n === 1
         ? rows[0].title || tr("session.untitled")
         : tr("session.deleteManyTitle");
-    const message =
-      n === 1
-        ? tr("session.deleteConfirm", {
-            name: rows[0].title || tr("session.untitled"),
-          })
-        : tr("session.deleteManyConfirm", { n: String(n) });
+    const message = sessionDeleteConfirmation(rows, tr);
     setAppDialog({
       kind: "confirm",
       title: n === 1 ? tr("session.deleteTitle") : title,
@@ -5393,6 +5381,8 @@ export function AppWorkbench() {
       previewBroken: tr("attach.preview.broken"),
       previewMissing: tr("attach.preview.missing"),
       previewPending: tr("attach.preview.pending"),
+      mediaLoadError: tr("media.loadError"),
+      mediaLoading: tr("media.loading"),
     }),
     [tr, platform],
   );
@@ -7879,10 +7869,9 @@ export function AppWorkbench() {
     (source: SessionRow, throughUserPromptIndex?: number | null) => {
       setCtxMenu(null);
       setForkRestoreCode(false);
-      // Prefer live snapshot agent id when forking the open chat.
-      const agentId =
-        source.agentSessionId ||
-        (session.sessionId === source.id ? session.agentSessionId : null);
+      const agentId = resolveForkSourceAgentId(
+        source, session.sessionId === source.id ? session.agentSessionId : null,
+      );
       const enriched = { ...source, agentSessionId: agentId ?? null };
       // Honest default: on only when a linked agent session exists.
       setForkCliSession(
@@ -9314,8 +9303,7 @@ export function AppWorkbench() {
             nextEfforts,
             channelEffortOptions ?? officialEffortCatalog,
           );
-          // Do not hold the chip on its old value while config writes and agent
-          // recycling run in the Host.
+          // Paint selection before host config writes and agent recycling.
           setModelId(pick.modelId);
           setEffort(clampedCustom);
           if (provider.model.trim() !== pick.modelId.trim()) {
@@ -9717,8 +9705,7 @@ export function AppWorkbench() {
    */
   const finalizeAddedProject = useCallback(
     async (p: Project, opts: { bindSession: boolean }) => {
-      // project_add already returns the persisted authoritative row. Paint it
-      // immediately instead of doing two redundant projects_list disk reads.
+      // Use the persisted project_add result without redundant list reads.
       const mergeProject = (project: Project) => {
         setProjects((current) =>
           mapProjectsList([
@@ -10975,59 +10962,6 @@ export function AppWorkbench() {
     ],
   );
 
-  const unarchivedAppSessionCount = sessions.filter((s) => !s.archived).length;
-  const linkedAgentIds = sessions
-    .map((s) => s.agentSessionId)
-    .filter((id): id is string => !!id);
-  const cliCallLogImport = useCliCallLogImport({
-    callLogs: account?.callLogs,
-    unarchivedAppSessionCount,
-    linkedAgentIds,
-    onImported: () => {
-      void refreshSessions();
-      void refreshProjects();
-    },
-  });
-  const importCliCallLogsFromSidebar = useCallback(async () => {
-    try {
-      const result = await cliCallLogImport.importListed();
-      if (result.imported.length > 0) {
-        showToast(
-          tr("settings.cliSessionsImportedN", {
-            n: String(result.imported.length),
-          }),
-        );
-      }
-      if (result.failed > 0) {
-        showToast(
-          tr("account.callLogsImportPartial", {
-            n: String(result.failed),
-          }),
-          5000,
-        );
-      }
-    } catch (e) {
-      showToast(String(e), 5000);
-    }
-  }, [cliCallLogImport, showToast, tr]);
-  const browseCliSessionsSettings = useCallback(() => {
-    navigateSettings("account");
-    setSettingsFocusAnchor("settings-anchor-account-callLogs");
-  }, [navigateSettings]);
-  const sidebarCliImportCta = cliCallLogImport.showCta ? (
-    <SidebarCliImportCta
-      hint={tr("sidebar.importCliSessionsHint")}
-      importLabel={
-        cliCallLogImport.importing
-          ? tr("settings.cliSessionsImporting")
-          : tr("sidebar.importCliSessions")
-      }
-      browseLabel={tr("account.callLogs")}
-      importing={cliCallLogImport.importing}
-      onImport={() => void importCliCallLogsFromSidebar()}
-      onBrowse={browseCliSessionsSettings}
-    />
-  ) : null;
   const {
     exportMdTarget,
     exportMdBusy,
@@ -12178,7 +12112,6 @@ export function AppWorkbench() {
           <WorkbenchSessionTree
             tr={tr}
             locale={locale}
-            sidebarCliImportCta={sidebarCliImportCta}
             projects={projects}
             visibleProjects={visibleProjects}
             sessions={sessions}

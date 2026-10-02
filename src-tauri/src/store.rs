@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::paths::{
-    automations_file, ensure_app_dirs, projects_file, session_dir, sessions_index_file,
-    settings_file,
+    automations_file, ensure_app_dirs, ensure_app_dirs_initialized, projects_file, session_dir,
+    sessions_index_file, settings_file,
 };
 
 /// Where composer model / effort / mode / permission choices are remembered.
@@ -129,6 +129,17 @@ impl Project {
     pub fn is_ssh_remote(&self) -> bool {
         ssh_alias_of(self).is_some()
     }
+
+    /// Fail closed on remote metadata before any local filesystem probe.
+    pub(crate) fn is_trusted_local(&self) -> bool {
+        self.trusted
+            && !self.is_legacy_general()
+            && self
+                .ssh_alias
+                .as_deref()
+                .is_none_or(|alias| alias.is_empty())
+            && infer_ssh_alias_from_name(&self.name, &self.path).is_none()
+    }
 }
 
 fn ssh_alias_of(p: &Project) -> Option<&str> {
@@ -242,6 +253,9 @@ pub struct SessionMeta {
     pub project_id: Option<String>,
     pub title: String,
     pub agent_session_id: Option<String>,
+    /// Recorded history origin, independent of the active execution agent id/home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_source: Option<crate::cli_history::CliSessionSource>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub model_id: Option<String>,
@@ -298,8 +312,8 @@ pub struct SessionMeta {
     /// Requires `agent_session_id` as the source; cleared after connect attempt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fork_agent_session: bool,
-    /// One-shot: after ACP session/fork, rewind the CHILD to this 0-based
-    /// user prompt index (`restoreFiles=false`). Partial forks only.
+    /// One-shot inclusive UI turn to retain after ACP session/fork.
+    /// Convert to the exclusive native boundary before rewinding the child.
     /// Cleared after the connect attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_rewind_prompt_index: Option<u32>,
@@ -1012,7 +1026,7 @@ pub struct ChatMessageStored {
     pub marker: Option<String>,
 }
 
-fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &PathBuf) -> T {
+fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
     match fs::read_to_string(path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => T::default(),
@@ -1035,7 +1049,12 @@ pub(crate) fn read_json_recover<T: for<'de> Deserialize<'de> + Default>(path: &P
                 );
                 let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
                 let bak = path.with_extension(format!("corrupt-{stamp}.json"));
-                let _ = fs::rename(path, &bak);
+                if path == &projects_file() {
+                    let _ =
+                        crate::path_scope::with_project_store_mutation(|| fs::rename(path, &bak));
+                } else {
+                    let _ = fs::rename(path, &bak);
+                }
                 if let Ok(mut g) = LAST_STORE_QUARANTINE.lock() {
                     *g = Some(bak.display().to_string());
                 }
@@ -1059,7 +1078,7 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
 }
 
 pub fn load_settings() -> AppSettings {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let mut s: AppSettings = read_json(&settings_file());
     // Compatibility: `use` was an effective network decision label, never a
     // persisted settings mode. Some local snapshots nevertheless contain it.
@@ -1256,7 +1275,7 @@ fn clear_legacy_grok_model_rows() {
         }
     }
     if changed {
-        if let Err(error) = write_json(&projects_file(), &projects) {
+        if let Err(error) = save_projects(&projects) {
             tracing::warn!("model row migration: projects: {error}");
         }
     }
@@ -1439,8 +1458,27 @@ pub fn reorder_projects_by_ids(list: &[Project], ordered_ids: &[String]) -> Vec<
     next
 }
 
+/// Read sidebar metadata without initialization, path probes, repair, or writes.
+/// Invalid JSON stays untouched for the validated reader to recover later.
+pub fn load_projects_metadata() -> Vec<Project> {
+    load_projects_metadata_from_path(&projects_file())
+}
+
+fn load_projects_metadata_from_path(path: &Path) -> Vec<Project> {
+    let mut list: Vec<Project> = read_json(path);
+    list.retain(|p| !p.is_legacy_general());
+    apply_project_pin_partition(&mut list);
+    list
+}
+
+/// Scope selection must not trigger settings migrations that validate projects.
+pub(crate) fn load_path_scope_session_data_mode() -> String {
+    let settings: AppSettings = read_json(&settings_file());
+    settings.session_data_mode
+}
+
 pub fn load_projects() -> Vec<Project> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let _ = ensure_general_workspace_dir();
     let mut list: Vec<Project> = read_json_recover(&projects_file());
     // One-shot migration: drop the temporary system:general project row and
@@ -1451,8 +1489,7 @@ pub fn load_projects() -> Vec<Project> {
     // Pin group first; keep manual order within each group (no last_opened sort).
     apply_project_pin_partition(&mut list);
     if dirty {
-        // Persist repaired ssh_alias / merged duplicates. Nested load via
-        // path_scope is a no-op once the file already has the alias.
+        // Persist repaired ssh_alias / merged duplicates.
         if let Err(e) = save_projects(&list) {
             tracing::warn!("repair ssh project rows: {e}");
         }
@@ -1463,7 +1500,7 @@ pub fn load_projects() -> Vec<Project> {
 /// Ensure `{app_data}/workspaces/general` exists (orphan chat default cwd).
 /// Not registered as a sidebar project.
 pub fn ensure_general_workspace_dir() -> Result<std::path::PathBuf, String> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let dir = crate::paths::general_workspace_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create general workspace: {e}"))?;
     Ok(dir)
@@ -1486,8 +1523,7 @@ fn migrate_legacy_general_project(list: &mut Vec<Project>) {
         return;
     }
     list.retain(|p| !p.is_legacy_general());
-    // Raw write: avoid save_projects → path_scope → load_projects recursion.
-    let _ = write_json(&projects_file(), &list);
+    let _ = write_projects(list);
     rehome_general_sessions();
     crate::path_scope::refresh_from_store();
 }
@@ -1503,8 +1539,12 @@ fn rehome_general_sessions() {
     });
 }
 
+fn write_projects(list: &[Project]) -> Result<(), String> {
+    crate::path_scope::with_project_store_mutation(|| write_json(&projects_file(), &list))
+}
+
 pub fn save_projects(list: &[Project]) -> Result<(), String> {
-    write_json(&projects_file(), &list)?;
+    write_projects(list)?;
     crate::path_scope::refresh_from_store();
     Ok(())
 }
@@ -1915,7 +1955,7 @@ pub fn sort_sessions_by_pin_then_updated(list: &mut [SessionMeta]) {
 }
 
 pub fn load_sessions_index() -> Vec<SessionMeta> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     // Recover from torn/corrupt index (shared CLI+App or crash mid-write).
     let mut list: Vec<SessionMeta> = read_json_recover(&sessions_index_file());
     sort_sessions_by_pin_then_updated(&mut list);
@@ -2007,6 +2047,7 @@ pub fn create_session(
         project_id,
         title: title.unwrap_or_else(|| "New chat".into()),
         agent_session_id: None,
+        cli_source: None,
         created_at: now,
         updated_at: now,
         model_id: None,
@@ -2075,6 +2116,14 @@ pub fn clear_session_agent_session_id(id: &str) -> Result<bool, String> {
 pub fn delete_session(id: &str) -> Result<(), String> {
     let id_for_index = id.to_string();
     update_sessions_index(move |list| {
+        if let Some(source) = list
+            .iter()
+            .find(|s| s.id == id_for_index)
+            .filter(|s| !crate::cli_history::is_continuation_copy(s) && !s.fork_agent_session)
+            .and_then(|s| s.cli_source.as_ref())
+        {
+            crate::cli_history::suppress_source_locked(source)?;
+        }
         list.retain(|s| s.id != id_for_index);
         Ok(())
     })?;
@@ -2597,7 +2646,7 @@ pub fn end_index_through_user_prompt(
     None
 }
 
-/// Keep messages through the end of the selected user turn (ACP `/rewind` semantics).
+/// Keep messages through the end of the selected user turn (inclusive UI semantics).
 pub fn truncate_through_user_prompt(
     messages: &[ChatMessageStored],
     user_prompt_index: u32,
@@ -2644,51 +2693,45 @@ pub fn user_prompt_count(messages: &[ChatMessageStored]) -> u32 {
         .count() as u32
 }
 
-/// ACP `targetPromptIndex` that keeps every prompt except the last one.
-///
-/// TUI `/rewind` keeps the selected turn and drops after it. Drop-last therefore
-/// targets the previous prompt when `count > 1`, or `0` when editing the only
-/// prompt. `None` when there is nothing to rewind.
+/// CLI rewind restores before this prompt; zero clears the only turn.
 pub fn drop_last_user_prompt_exec_index(user_prompt_count: u32) -> Option<u32> {
-    match user_prompt_count {
-        0 => None,
-        1 => Some(0),
-        n => Some(n - 2),
-    }
+    user_prompt_count.checked_sub(1)
 }
 
-/// Parse CLI `user prompt index out of range: X (have N)`.
-pub fn parse_agent_prompt_count_from_rewind_error(err: &str) -> Option<u32> {
-    const MARK: &str = "(have ";
-    let rest = err.split(MARK).nth(1)?;
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    digits.parse().ok()
+/// Convert an inclusive UI turn to an exclusive native rewind boundary.
+pub fn inclusive_user_prompt_exec_index(through_user_prompt_index: u32) -> Result<u32, String> {
+    through_user_prompt_index
+        .checked_add(1)
+        .ok_or_else(|| "rewind prompt index overflow".into())
 }
 
-/// Map a Host journal user-prompt index onto the live agent session.
-///
-/// After restart, Host still lists old bubbles while the new agent session only
-/// has prompts sent since reconnect (history bootstrap is prepended onto the
-/// first of those). Host turns before that window exist only inside the blob.
-pub fn map_host_rewind_index_to_agent(
-    host_index: u32,
-    host_user_turns: u32,
-    agent_user_turns: u32,
-) -> Option<u32> {
-    if agent_user_turns == 0 {
-        return None;
+/// Keeping the latest turn is a no-op: CLI rejects a boundary equal to its count.
+pub fn through_user_prompt_exec_index(
+    through_user_prompt_index: u32,
+    user_prompt_count: u32,
+) -> Result<Option<u32>, String> {
+    if through_user_prompt_index >= user_prompt_count {
+        return Err(format!(
+            "user prompt index out of range: {through_user_prompt_index} (have {user_prompt_count})"
+        ));
     }
-    if host_user_turns <= agent_user_turns {
-        return (host_index < agent_user_turns).then_some(host_index);
+    let boundary = inclusive_user_prompt_exec_index(through_user_prompt_index)?;
+    Ok((boundary < user_prompt_count).then_some(boundary))
+}
+
+/// Require verified native/visible identity before using UI turn indexes for ACP.
+pub fn ensure_rewind_prompt_mapping(meta: &SessionMeta) -> Result<(), String> {
+    if meta.cli_source.is_some() {
+        let native_count = crate::cli_history_continue::prompt_mapping::verify(meta)?;
+        // A pending fork intentionally keeps only a prefix of the full source journal.
+        if !(meta.fork_agent_session && meta.fork_rewind_prompt_index.is_some())
+            && session_dir(&meta.id).join("messages.json").exists()
+            && user_prompt_count(&load_messages(&meta.id)) != native_count
+        {
+            return Err("Cannot safely map CLI history turns to native rewind indexes: App journal differs from native history".into());
+        }
     }
-    let first_live = host_user_turns - agent_user_turns;
-    if host_index < first_live {
-        return None;
-    }
-    Some(host_index - first_live)
+    Ok(())
 }
 
 /// Exclusive cut index: keep messages strictly before the last real user prompt.
@@ -2731,8 +2774,16 @@ pub fn fork_session(
         .ok_or_else(|| format!("session not found: {source_id}"))?
         .clone();
 
-    let mut msgs = load_messages(source_id);
+    if fork_agent_session && through_user_prompt_index.is_some() {
+        ensure_rewind_prompt_mapping(&source)?;
+    }
+    let mut msgs =
+        crate::cli_history::read_messages(source_id)?.unwrap_or_else(|| load_messages(source_id));
+    let mut pending_cut = None;
     if let Some(idx) = through_user_prompt_index {
+        if through_user_prompt_exec_index(idx, user_prompt_count(&msgs))?.is_some() {
+            pending_cut = Some(idx);
+        }
         msgs = truncate_through_user_prompt(&msgs, idx)?;
     }
 
@@ -2749,6 +2800,11 @@ pub fn fork_session(
             }
         });
 
+    let native_source = if fork_agent_session {
+        crate::cli_history_continue::fork_source(&source)?
+    } else {
+        None
+    };
     let mut meta = create_session(source.project_id.clone(), Some(fork_title), false)?;
     // Inherit composer prefs from source so the fork feels continuous.
     meta.model_id = source.model_id.clone();
@@ -2768,17 +2824,19 @@ pub fn fork_session(
     meta.workspace_root_snapshot = source.workspace_root_snapshot.clone();
     meta.workspace_capability = source.workspace_capability.clone();
     // CLI --fork-session: resume parent agent context under a new agent id.
-    let source_agent = source
-        .agent_session_id
-        .as_deref()
+    let source_agent = native_source
+        .as_ref()
+        .map(|source| source.agent_session_id.as_str())
+        .or(source.agent_session_id.as_deref())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     if fork_agent_session {
         if let Some(aid) = source_agent {
             meta.agent_session_id = Some(aid);
+            meta.cli_source = native_source;
             meta.fork_agent_session = true;
-            meta.fork_rewind_prompt_index = through_user_prompt_index;
+            meta.fork_rewind_prompt_index = pending_cut;
         }
     }
     meta.updated_at = Utc::now();
@@ -2903,7 +2961,7 @@ pub struct AutomationInput {
 }
 
 pub fn load_automations() -> Vec<Automation> {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     let mut list: Vec<Automation> = read_json(&automations_file());
     list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
     list
@@ -3436,6 +3494,10 @@ pub fn save_composer_prefs(
 
     Ok(resolve_composer_prefs(project_id, session_id))
 }
+
+#[cfg(test)]
+#[path = "store/project_metadata_tests.rs"]
+mod project_metadata_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4193,6 +4255,7 @@ mod tests {
             project_id: None,
             title: id.into(),
             agent_session_id: None,
+            cli_source: None,
             created_at: updated,
             updated_at: updated,
             model_id: None,
@@ -4387,11 +4450,85 @@ mod tests {
         assert_eq!(full.fork_rewind_prompt_index, None);
         assert_eq!(load_messages(&full.id).len(), 16);
 
+        let latest = fork_session(&src.id, Some(7), None, true).expect("latest turn");
+        assert!(latest.fork_agent_session);
+        assert_eq!(latest.fork_rewind_prompt_index, None);
+        assert_eq!(load_messages(&latest.id).len(), 16);
+
+        let first = fork_session(&src.id, Some(0), None, true).expect("first turn");
+        assert_eq!(first.fork_rewind_prompt_index, Some(0));
+        assert_eq!(load_messages(&first.id).len(), 2);
+        assert_eq!(load_messages(&first.id)[1].content, "a1");
+
         let journal_only = fork_session(&src.id, Some(4), None, false).expect("journal");
         assert!(!journal_only.fork_agent_session);
         assert_eq!(journal_only.fork_rewind_prompt_index, None);
         assert!(journal_only.agent_session_id.is_none());
         assert_eq!(load_messages(&journal_only.id).len(), 10);
+
+        src.cli_source = Some(crate::cli_history::CliSessionSource {
+            source_home: "/fixture".into(),
+            relative_dir: PathBuf::from("sessions")
+                .join("workspace")
+                .join("agent-parent")
+                .to_string_lossy()
+                .into_owned(),
+            agent_session_id: "agent-parent".into(),
+            cwd: None,
+            title: None,
+            updated_at: None,
+            revision: String::new(),
+            app_owned: true,
+        });
+        update_session_meta(&src).unwrap();
+        let before = load_sessions_index().len();
+        let error = fork_session(&src.id, Some(0), None, true).unwrap_err();
+        assert!(error.contains("Cannot safely map"));
+        assert_eq!(
+            load_sessions_index().len(),
+            before,
+            "no partial child created"
+        );
+        assert_eq!(load_messages(&src.id).len(), 16, "source unchanged");
+
+        let native_home = crate::paths::agent_home_dir();
+        let native_dir = native_home.join("sessions/workspace/agent-parent");
+        fs::create_dir_all(&native_dir).unwrap();
+        fs::write(
+            native_dir.join("summary.json"),
+            r#"{"chat_format_version":1}"#,
+        )
+        .unwrap();
+        let native_history: String = (0..8)
+            .map(|index| {
+                format!(
+                    "{}\n{}\n",
+                    serde_json::json!({
+                        "type":"user", "prompt_index":index,
+                        "content":[{"type":"text","text":format!("q{}", index + 1)}]
+                    }),
+                    serde_json::json!({"type":"assistant","content":format!("a{}", index + 1)})
+                )
+            })
+            .collect();
+        fs::write(native_dir.join("chat_history.jsonl"), native_history).unwrap();
+        src.cli_source.as_mut().unwrap().source_home = fs::canonicalize(native_home)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        update_session_meta(&src).unwrap();
+        let native_child = fork_session(&src.id, Some(0), None, true).expect("mapped native fork");
+        assert_eq!(native_child.fork_rewind_prompt_index, Some(0));
+        assert_eq!(load_messages(&native_child.id).len(), 2);
+        assert!(
+            ensure_rewind_prompt_mapping(&native_child).is_ok(),
+            "pending child mapping uses all eight source turns, not its one-turn journal"
+        );
+        assert_eq!(
+            load_messages(&src.id).len(),
+            16,
+            "native fork leaves source unchanged"
+        );
 
         std::env::remove_var("GROK_APP_HOME");
         let _ = fs::remove_dir_all(&tmp);
@@ -4542,6 +4679,8 @@ mod tests {
             &[
                 stored_msg("u1", "user", "first", None),
                 stored_msg("a1", "assistant", "ok", None),
+                stored_msg("u2", "user", "second", None),
+                stored_msg("a2", "assistant", "later", None),
             ],
         )
         .expect("msgs");
@@ -4711,6 +4850,7 @@ mod tests {
                 project_id: Some(GENERAL_PROJECT_ID.into()),
                 title: "legacy".into(),
                 agent_session_id: None,
+                cli_source: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 model_id: None,
@@ -5165,7 +5305,9 @@ mod tests {
             stored_msg("u3", "user", "做的怎么样了", None),
         ];
         assert_eq!(user_prompt_count(&msgs), 3);
-        assert_eq!(drop_last_user_prompt_exec_index(3), Some(1));
+        assert_eq!(drop_last_user_prompt_exec_index(3), Some(2));
+        assert_eq!(through_user_prompt_exec_index(1, 3), Ok(Some(2)));
+        assert_eq!(truncate_through_user_prompt(&msgs, 1).unwrap().len(), 6);
         assert_eq!(cut_index_before_last_user_prompt(&msgs), 6);
         let kept = &msgs[..cut_index_before_last_user_prompt(&msgs)];
         assert_eq!(kept.last().map(|m| m.id.as_str()), Some("s2"));
@@ -5176,32 +5318,74 @@ mod tests {
     fn drop_last_exec_index_edges() {
         assert_eq!(drop_last_user_prompt_exec_index(0), None);
         assert_eq!(drop_last_user_prompt_exec_index(1), Some(0));
-        assert_eq!(drop_last_user_prompt_exec_index(2), Some(0));
+        assert_eq!(drop_last_user_prompt_exec_index(2), Some(1));
+        assert_eq!(drop_last_user_prompt_exec_index(25), Some(24));
+        assert_eq!(
+            drop_last_user_prompt_exec_index(u32::MAX),
+            Some(u32::MAX - 1)
+        );
     }
 
     #[test]
-    fn map_host_rewind_index_skips_bootstrap_only_turns() {
-        // Combined bootstrap: 3 old host turns + 2 post-restart prompts (agent has 2).
-        assert_eq!(map_host_rewind_index_to_agent(3, 5, 2), Some(0));
-        assert_eq!(map_host_rewind_index_to_agent(4, 5, 2), Some(1));
-        assert_eq!(map_host_rewind_index_to_agent(2, 5, 2), None);
-        assert_eq!(map_host_rewind_index_to_agent(3, 5, 5), Some(3));
-        assert_eq!(map_host_rewind_index_to_agent(0, 1, 1), Some(0));
-        assert_eq!(map_host_rewind_index_to_agent(1, 2, 0), None);
+    fn rewind_through_turn_is_exclusive_and_latest_is_noop() {
+        assert_eq!(through_user_prompt_exec_index(0, 2), Ok(Some(1)));
+        assert_eq!(through_user_prompt_exec_index(1, 3), Ok(Some(2)));
+        assert_eq!(through_user_prompt_exec_index(0, 1), Ok(None));
+        assert_eq!(through_user_prompt_exec_index(24, 25), Ok(None));
+        assert!(through_user_prompt_exec_index(0, 0).is_err());
+        assert!(through_user_prompt_exec_index(2, 2).is_err());
+        assert!(inclusive_user_prompt_exec_index(u32::MAX).is_err());
     }
 
     #[test]
-    fn parse_agent_rewind_have_count() {
-        assert_eq!(
-            parse_agent_prompt_count_from_rewind_error(
-                "user prompt index out of range: 3 (have 2)"
-            ),
-            Some(2)
-        );
-        assert_eq!(
-            parse_agent_prompt_count_from_rewind_error("method not found"),
-            None
-        );
+    fn rewind_native_boundaries_match_inclusive_journal_and_drop_last() {
+        let msgs = vec![
+            stored_msg("u0", "user", "first", None),
+            stored_msg("a0", "assistant", "first answer", None),
+            stored_msg("u1", "user", "second", None),
+            stored_msg("a1", "assistant", "second answer", None),
+            stored_msg("u2", "user", "third", None),
+            stored_msg("a2", "assistant", "third answer", None),
+        ];
+        for through in 0..2 {
+            let boundary = through_user_prompt_exec_index(through, 3).unwrap().unwrap();
+            let native_cut = msgs
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| is_user_prompt_message(m))
+                .nth(boundary as usize)
+                .unwrap()
+                .0;
+            let kept = truncate_through_user_prompt(&msgs, through).unwrap();
+            assert_eq!(kept.len(), native_cut);
+            assert_eq!(kept.last().unwrap().role, "assistant");
+        }
+        let drop_boundary = drop_last_user_prompt_exec_index(3).unwrap();
+        assert_eq!(drop_boundary, 2);
+        assert_eq!(cut_index_before_last_user_prompt(&msgs), 4);
+        assert_eq!(drop_last_user_prompt_exec_index(1), Some(0));
+        assert_eq!(cut_index_before_last_user_prompt(&msgs[..2]), 0);
+    }
+
+    #[test]
+    fn rewind_cli_projection_without_native_indexes_is_rejected() {
+        let mut meta = sample_session("source", false, Utc::now());
+        assert!(ensure_rewind_prompt_mapping(&meta).is_ok());
+        meta.cli_source = Some(crate::cli_history::CliSessionSource {
+            source_home: "/fixture".into(),
+            relative_dir: "sessions/workspace/agent".into(),
+            agent_session_id: "agent".into(),
+            cwd: None,
+            title: None,
+            updated_at: None,
+            revision: String::new(),
+            app_owned: false,
+        });
+        for app_owned in [false, true] {
+            meta.cli_source.as_mut().unwrap().app_owned = app_owned;
+            let error = ensure_rewind_prompt_mapping(&meta).unwrap_err();
+            assert!(error.contains("Cannot safely map"));
+        }
     }
 
     #[test]

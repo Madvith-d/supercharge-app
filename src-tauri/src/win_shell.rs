@@ -91,7 +91,9 @@ pub fn post_main_caption_action(action: &str) -> Result<(), String> {
             }
             _ => return Err(format!("unsupported caption action: {action}")),
         };
-        let _ = ShowWindowAsync(hwnd, command);
+        if !ShowWindowAsync(hwnd, command).as_bool() {
+            return Err("could not post caption action to the main window".into());
+        }
     }
     Ok(())
 }

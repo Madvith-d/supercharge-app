@@ -1,5 +1,6 @@
 /** Merged it message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { itCore } from "./core";
 import { itSidebar } from "./sidebar";
 import { itProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const it: Record<MessageKey, string> = {
   ...itCore,
   ...updateMessages["it"],
+  ...pluginApiMessages.it,
   ...itSidebar,
   ...itProject,
   ...itSession,

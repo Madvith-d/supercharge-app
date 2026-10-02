@@ -80,14 +80,16 @@ jobs:
         # All three legs must stay at zero warnings: `-D warnings` blocks merge so
         # platform-cfg dead code cannot silently re-accumulate (98 warnings piled
         # up on macOS alone before the 2026-08 sweeps).
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings && cargo clippy -p tauri-plugin-window-state --all-targets -- -D warnings
         continue-on-error: false
       # Includes ACP golden fixtures (tests/fixtures/acp + acp_golden_test).
       # Required green for any ACP / mock_acp / permission wire change (T06).
       - name: cargo test
         if: matrix.name != 'Windows'
         working-directory: src-tauri
-        run: cargo test
+        run: |
+          cargo test
+          cargo test -p tauri-plugin-window-state
       # Windows MSVC lib tests link Tauri/WebView2/comctl32 and abort at process
       # start with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) unless Common
       # Controls v6 is activated. We cannot pass a second /MANIFESTINPUT through
@@ -136,11 +138,13 @@ jobs:
           # only this package forces the unit-test harness to be rebuilt from
           # the checked-out source while preserving cached dependencies.
           Write-Host "=== cargo clean -p supercharge-app ==="
-          cargo clean -p supercharge-app
+          cargo clean -p supercharge-app -p tauri-plugin-window-state
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Write-Host "=== cargo test --no-run ==="
           cargo test --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p tauri-plugin-window-state --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Locate mt.exe (Windows SDK or MSVC host tools). Prefer Windows Kits —
@@ -178,6 +182,8 @@ jobs:
           $manifest = Join-Path (Get-Location) "windows-test-manifest.xml"
           if (-not (Test-Path -LiteralPath $manifest)) { throw "missing $manifest" }
 
+          $pluginExes = @(Get-ChildItem -Path "target\debug\deps" -Filter "tauri_plugin_window_state-*.exe" -ErrorAction SilentlyContinue)
+          if (-not $pluginExes.Count) { throw "no window-state test harness found" }
           $exes = @(Get-ChildItem -Path "target\debug\deps" -Filter "supercharge_app_lib-*.exe" -ErrorAction SilentlyContinue)
           if (-not $exes.Count) {
             # Fallback: any freshly built test harness under deps
@@ -185,6 +191,7 @@ jobs:
               Where-Object { $_.Name -notmatch 'build_script|deps_dir' })
           }
           if (-not $exes.Count) { throw "no test harness exe found under target\debug\deps" }
+          $exes = @(@($exes) + @($pluginExes) | Sort-Object FullName -Unique)
 
           foreach ($exe in $exes) {
             Write-Host "Embedding Common Controls v6 manifest into $($exe.Name)"

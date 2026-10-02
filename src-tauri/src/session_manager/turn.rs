@@ -550,6 +550,8 @@ impl SessionManager {
                     // A policy/effort change queued during this turn must be
                     // applied once the prompt RPC is terminal; otherwise the
                     // next ready fast-path promotes the stale ACP forever.
+                    mgr.flush_pending_managed_plugin_apply(&app2, &turn_sid)
+                        .await;
                     mgr.flush_pending_soft_respawn(&app2, &turn_sid).await;
                 }
                 Ok(()) => {
@@ -648,6 +650,8 @@ impl SessionManager {
                     // Apply deferred process-level settings only after the
                     // final journal reconcile has had a chance to read the
                     // completed turn from the agent's disk log.
+                    mgr.flush_pending_managed_plugin_apply(&app2, &turn_sid)
+                        .await;
                     mgr.flush_pending_soft_respawn(&app2, &turn_sid).await;
                 }
             }
@@ -1027,6 +1031,7 @@ impl SessionManager {
                 );
             }
         }
+        self.flush_pending_managed_plugin_apply(&app, &target).await;
         self.flush_pending_soft_respawn(&app, &target).await;
         Ok(stopped_snap)
     }

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoredJournalMessage } from "./mapStoredMessages";
 import type { ChatMessage } from "./session";
 import { sessionTranscriptStore } from "./sessionTranscriptStore";
@@ -85,6 +85,21 @@ describe("stripAutomationFences / journalHasScheduledUser", () => {
 });
 
 describe("refineJournalAttachments", () => {
+  it.each([false, true])("preserves inline payloads and filenames even when classification fails: %s", (classifyFailed) => {
+    const attachments = [
+      { path: "data:image/png;base64,AA==", name: "original.png", isDir: false },
+      { path: "data:audio/wav;base64,AA==", name: "voice.wav", isDir: false },
+      { path: "data:video/mp4;base64,AA==", name: "clip.mp4", isDir: false },
+      { path: "data:text/plain,hello", name: "notes.txt", isDir: false },
+    ];
+    const out = refineJournalAttachments([assistant("a", "", { attachments })], {
+      resolved: [],
+      classifyByPath: classifyFailed ? null : new Map(attachments.map((a) => [a.path, { ...a, name: "wrong", exists: false }])),
+      classifyFailed,
+    });
+    expect(out[0]?.attachments).toEqual(attachments);
+  });
+
   it("drops local attachments classify says are missing", () => {
     const rows = [
       assistant("a", "hi", {
@@ -158,6 +173,94 @@ describe("refineJournalAttachments", () => {
 describe("hydrateSessionJournal", () => {
   beforeEach(() => {
     sessionTranscriptStore.resetForTests();
+  });
+
+  it.each(["append", "rewind", "shorter", "empty"])("projects authoritative source %s instead of preferring cache", (change) => {
+    const cached = [user("u", "Question"), assistant("a", "Long cached answer", { streaming: true })];
+    const rows = change === "append" ? [...cached, user("new", "Next question")]
+      : change === "rewind" ? cached.slice(0, 1)
+      : change === "shorter" ? [cached[0], assistant("a", "Short")]
+      : [];
+    const out = projectJournalToChat({ stored: rows, cached, liveState: "idle", sourceAuthoritative: true });
+    expect(out.map(({ id, content }) => ({ id, content }))).toEqual(rows.map(({ id, content }) => ({ id, content })));
+  });
+
+  it("does not overwrite a newer source refresh while opening", async () => {
+    sessionTranscriptStore.setViewingSessionId("s1");
+    const old = [assistant("a", "Old source")];
+    const fresh = [assistant("a", "New source")];
+    sessionTranscriptStore.setMessages(old);
+    let finish!: (rows: StoredJournalMessage[]) => void;
+    const pending = hydrateSessionJournal({
+      sessionId: "s1", sessionScheduled: false, stillThisOpen: () => true,
+      liveState: "idle", sourceAuthoritative: () => true,
+      io: ioWith([], { sessionMessages: () => new Promise((resolve) => { finish = resolve; }) }),
+    });
+    sessionTranscriptStore.setMessages(fresh);
+    finish(old);
+    expect((await pending).status).toBe("aborted");
+    expect(sessionTranscriptStore.getMessages()).toBe(fresh);
+  });
+
+  it("aborts a failed source read after ownership changes without painting", async () => {
+    sessionTranscriptStore.setViewingSessionId("s1");
+    sessionTranscriptStore.beginJournalLoad("s1");
+    let external = true;
+    let reject!: (error: Error) => void;
+    const pending = hydrateSessionJournal({
+      sessionId: "s1", sessionScheduled: false, stillThisOpen: () => true,
+      liveState: "idle", sourceAuthoritative: () => external,
+      io: ioWith([], { sessionMessages: () => new Promise((_, fail) => { reject = fail; }) }),
+    });
+    const continuation = [assistant("a", "App continuation", { streaming: true })];
+    sessionTranscriptStore.setMessages(continuation);
+    external = false;
+    reject(new Error("source read failed"));
+    expect((await pending).status).toBe("aborted");
+    expect(sessionTranscriptStore.getMessages()).toBe(continuation);
+  });
+
+  it.each(["ownership", "navigation"])("drops pending source attachment classification after %s changes", async (change) => {
+    sessionTranscriptStore.setViewingSessionId("s1");
+    let current = true;
+    let external = true;
+    const attachment = { path: "/tmp/answer.png", name: "answer.png", isDir: false };
+    let finish!: (rows: Awaited<ReturnType<JournalIo["pathsClassify"]>>) => void;
+    const result = await hydrateSessionJournal({
+      sessionId: "s1", sessionScheduled: false, stillThisOpen: () => current,
+      liveState: "idle", sourceAuthoritative: () => external,
+      io: ioWith([stored({ id: "a", content: "Source", attachments: [attachment] })], {
+        pathsClassify: () => new Promise((resolve) => { finish = resolve; }),
+      }),
+    });
+    const latest = sessionTranscriptStore.getCached("s1");
+    if (change === "ownership") external = false;
+    else current = false;
+    finish([{ ...attachment, exists: false }]);
+    await result.refinePromise;
+    expect(sessionTranscriptStore.getCached("s1")).toBe(latest);
+    expect(sessionTranscriptStore.getMessages()).toBe(latest);
+  });
+
+  it.each([false, true])("never sends inline payloads to filesystem classification (mixed: %s)", async (mixed) => {
+    const inline = { path: "data:image/png;base64,AA==", name: "original.png", isDir: false };
+    const local = { path: "/tmp/missing.png", name: "missing.png", isDir: false };
+    const pathsClassify = vi.fn(async () => [{ ...local, exists: false }]);
+    const sessionResolveRelativeMedia = vi.fn(async () => []);
+    const result = await hydrateSessionJournal({
+      sessionId: "inline",
+      sessionScheduled: false,
+      stillThisOpen: () => true,
+      liveState: "idle",
+      io: ioWith([stored({ id: "u", role: "user", content: "look", attachments: mixed ? [inline, local] : [inline] })], {
+        pathsClassify, sessionResolveRelativeMedia,
+      }),
+    });
+    await result.refinePromise;
+    expect(sessionTranscriptStore.getMessages()[0]?.attachments).toEqual([inline]);
+    if (mixed) expect(pathsClassify).toHaveBeenCalledExactlyOnceWith([local.path]);
+    else expect(pathsClassify).not.toHaveBeenCalled();
+    expect(sessionResolveRelativeMedia).not.toHaveBeenCalled();
   });
 
   it("aborts after fetch: caches prefer(), does not paint viewing", async () => {

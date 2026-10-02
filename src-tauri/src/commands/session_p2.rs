@@ -60,17 +60,27 @@ fn resolve_media_search_roots(
             .find(|p| &p.id == pid)
             .map(|p| std::path::PathBuf::from(p.path))
     });
-    let session_root = meta.agent_session_id.as_deref().and_then(|agent_sid| {
-        let settings = store::load_settings();
-        crate::paths::find_agent_session_dir(
-            agent_sid,
-            project_root
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .as_deref(),
-            &settings.session_data_mode,
-        )
+    let project_root = project_root.or_else(|| {
+        meta.cli_source
+            .as_ref()
+            .and_then(|source| source.cwd.as_deref())
+            .map(std::path::PathBuf::from)
     });
+    let session_root = if meta.cli_source.is_some() {
+        crate::cli_history_continue::history_directory(&meta)
+    } else {
+        meta.agent_session_id.as_deref().and_then(|agent_sid| {
+            let settings = store::load_settings();
+            crate::paths::find_agent_session_dir(
+                agent_sid,
+                project_root
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .as_deref(),
+                &settings.session_data_mode,
+            )
+        })
+    };
     (session_root, project_root)
 }
 
@@ -79,4 +89,3 @@ fn resolve_session_media_root(session_id: &str) -> Option<String> {
         .0
         .map(|p| p.to_string_lossy().to_string())
 }
-

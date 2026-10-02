@@ -3,8 +3,7 @@
  * non-mac platforms when decorations are disabled. macOS uses Overlay
  * traffic lights.
  */
-import { useCallback, useEffect, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useWindowCaptionControls } from "@/hooks/useWindowCaptionControls";
 import {
   IconClose,
   IconMaximize,
@@ -13,12 +12,7 @@ import {
 } from "@/components/icons";
 import { Tip } from "@/components/ui/tooltip";
 import { detectAppPlatform } from "@/lib/appPlatform";
-import {
-  isFakeMaximized,
-  minimizeWindowReliable,
-  toggleMaximizeFromTitlebar,
-  toggleMaximizeReliable,
-} from "@/lib/windowChrome";
+import { toggleMaximizeFromTitlebar } from "@/lib/windowChrome";
 
 export {
   tauriDragRegion,
@@ -36,58 +30,7 @@ type Props = {
 };
 
 export function WindowControls({ visible, labels }: Props) {
-  const [maximized, setMaximized] = useState(false);
-
-  const refreshMaximized = useCallback(async () => {
-    try {
-      const os = await getCurrentWindow().isMaximized();
-      setMaximized(os || isFakeMaximized());
-    } catch {
-      /* browser / no window API */
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!visible) return;
-    void refreshMaximized();
-    let unlistenResize: (() => void) | undefined;
-    let cancelled = false;
-    let syncFrame = 0;
-    void (async () => {
-      try {
-        unlistenResize = await getCurrentWindow().onResized(() => {
-          // A maximize/restore can emit several resize events in one frame.
-          // Coalesce the IPC query; movement is not a maximize-state change.
-          if (syncFrame) return;
-          syncFrame = window.requestAnimationFrame(() => {
-            syncFrame = 0;
-            void refreshMaximized();
-          });
-        });
-        if (cancelled) unlistenResize();
-      } catch {
-        /* browser / no window API */
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (syncFrame) window.cancelAnimationFrame(syncFrame);
-      unlistenResize?.();
-    };
-  }, [visible, refreshMaximized]);
-
-  const winChrome = async (action: "minimize" | "toggleMaximize" | "close") => {
-    try {
-      const w = getCurrentWindow();
-      if (action === "minimize") await minimizeWindowReliable();
-      if (action === "toggleMaximize") {
-        await toggleMaximizeReliable();
-      }
-      if (action === "close") await w.close();
-    } catch {
-      /* native resize reconciliation keeps the glyph honest */
-    }
-  };
+  const { maximized, act: winChrome } = useWindowCaptionControls(visible);
 
   if (!visible) return null;
 
@@ -111,7 +54,7 @@ export function WindowControls({ visible, labels }: Props) {
           onPointerDown={stopChromePointer}
           onClick={(e) => {
             e.stopPropagation();
-            void winChrome("minimize");
+            winChrome("minimize");
           }}
         >
           <IconMinimize size={14} />
@@ -126,8 +69,7 @@ export function WindowControls({ visible, labels }: Props) {
           onClick={(e) => {
             e.stopPropagation();
             e.preventDefault();
-            // click fires after pointer-up, so no delayed task is needed here.
-            void winChrome("toggleMaximize");
+            winChrome("toggleMaximize");
           }}
         >
           {maximized ? <IconRestore size={14} /> : <IconMaximize size={14} />}
@@ -141,7 +83,7 @@ export function WindowControls({ visible, labels }: Props) {
           onPointerDown={stopChromePointer}
           onClick={(e) => {
             e.stopPropagation();
-            void winChrome("close");
+            winChrome("close");
           }}
         >
           <IconClose size={14} />

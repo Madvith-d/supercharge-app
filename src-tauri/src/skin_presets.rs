@@ -324,7 +324,7 @@ fn materialize_upload_dir(
     };
     let blob = upload.as_ref().map(|d| d.join("blob.bin"));
     let tmp = paths::skin_staging_upload_dir().join(format!("pack-{}", Uuid::new_v4()));
-    fs::create_dir_all(&tmp).map_err(|e| format!("invalid_pack: {e}"))?;
+    skin_staging::create_process_owned_dir(&tmp).map_err(|e| format!("invalid_pack: {e}"))?;
     let mut man = manifest;
     if let Some(obj) = man.as_object_mut() {
         obj.remove("themePreference");

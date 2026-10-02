@@ -229,7 +229,16 @@ pub fn write_session_bundle(
         .find(|s| s.id == session_id)
         .ok_or_else(|| format!("session not found: {session_id}"))?;
 
-    let messages = store::load_messages(session_id);
+    let (messages, cli_transcript_error) = match crate::cli_history::read_messages(session_id) {
+        Ok(messages) => (
+            messages.unwrap_or_else(|| store::load_messages(session_id)),
+            None,
+        ),
+        Err(error) => (
+            store::load_messages(session_id),
+            Some(store::redact_text(&error)),
+        ),
+    };
     let settings = store::load_settings();
     let projects = store::load_projects();
     let project = meta
@@ -238,9 +247,13 @@ pub fn write_session_bundle(
         .and_then(|pid| projects.iter().find(|p| &p.id == pid).cloned());
     let project_path = project.as_ref().map(|p| p.path.clone());
 
-    let agent_dir = meta.agent_session_id.as_ref().and_then(|aid| {
-        paths::find_agent_session_dir(aid, project_path.as_deref(), &settings.session_data_mode)
-    });
+    let agent_dir = if meta.cli_source.is_some() {
+        crate::cli_history_continue::history_directory(&meta)
+    } else {
+        meta.agent_session_id.as_ref().and_then(|aid| {
+            paths::find_agent_session_dir(aid, project_path.as_deref(), &settings.session_data_mode)
+        })
+    };
 
     let stamp = Utc::now().format("%Y%m%d-%H%M%S");
     let short_id: String = session_id.chars().take(8).collect();
@@ -266,6 +279,7 @@ pub fn write_session_bundle(
         "sessionDataMode": settings.session_data_mode,
         "agentDirFound": agent_dir.is_some(),
         "messageCount": messages.len(),
+        "cliTranscriptError": cli_transcript_error,
         "hasRuntimeSnapshot": runtime_json.is_some(),
     });
     write_zip_str(&mut zip, opts, "meta.json", &pretty_json(&export_meta)?)?;
@@ -618,12 +632,18 @@ fn collect_agent_files(
         Err(_) => return Ok(()),
     };
     for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
         let path = entry.path();
-        if path.is_dir() {
+        if kind.is_dir() {
             collect_agent_files(root, &path, out, depth + 1)?;
             continue;
         }
-        if !path.is_file() {
+        if !kind.is_file() {
             continue;
         }
         let rel = path

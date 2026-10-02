@@ -514,7 +514,7 @@ pub fn inspect_unpacked_dir(
     let inspect_id = Uuid::new_v4().to_string();
     let dest = paths::skin_staging_inspect_dir().join(&inspect_id);
     // Marker only — do not copy large wallpapers into staging.
-    fs::create_dir_all(&dest).map_err(|e| err("invalid_pack", e))?;
+    skin_staging::create_process_owned_dir(&dest).map_err(|e| err("invalid_pack", e))?;
     let _ = fs::write(
         dest.join(".library-ref"),
         src_dir.to_string_lossy().as_bytes(),
@@ -624,7 +624,7 @@ pub fn inspect_pack_into(
     abort_old_inspect();
     let inspect_id = Uuid::new_v4().to_string();
     let dest = inspect_parent.join(&inspect_id);
-    fs::create_dir_all(&dest).map_err(|e| err("invalid_pack", e))?;
+    skin_staging::create_process_owned_dir(&dest).map_err(|e| err("invalid_pack", e))?;
     if let Ok(mut g) = CURRENT_INSPECT.lock() {
         *g = Some(inspect_id.clone());
     }

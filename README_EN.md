@@ -84,7 +84,7 @@ Provider credentials and conversation history are sensitive. Do not commit `secr
 ## Upstream contributors
 
 <!-- CONTRIBUTORS:START -->
-Thanks to everyone who has contributed to Grok App. All human GitHub contributors (by commit count, updated 2026-10-01).
+Thanks to everyone who has contributed to Grok App. All human GitHub contributors (by commit count, updated 2026-10-02).
 
 <p align="center">
   <a href="https://github.com/RongleCat" title="RongleCat"><img src="https://github.com/RongleCat.png?size=96" width="72" height="72" alt="RongleCat" style="border-radius:50%" /></a>

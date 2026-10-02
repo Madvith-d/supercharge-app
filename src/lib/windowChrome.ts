@@ -12,8 +12,8 @@
  */
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { AppPlatform } from "@/lib/appPlatform";
 import { windowCaptionAction } from "@/lib/api/system";
+import type { AppPlatform } from "@/lib/appPlatform";
 import { detectAppPlatform } from "@/lib/appPlatform";
 
 export const TITLEBAR_MAXIMIZE_DEBOUNCE_MS = 400;
@@ -23,6 +23,13 @@ export const OS_MAXIMIZE_POLL_MS = 16;
 
 /** Linux: short wait then work-area fill. */
 export const LINUX_MAXIMIZE_WAIT_MS = 40;
+
+/**
+ * Caption min/max/close: wait until the pointer is fully up before
+ * maximize(). Otherwise Windows treats the still-held click as a drag on
+ * a maximized window and immediately restores (flash).
+ */
+export const CAPTION_BUTTON_TOGGLE_DEFER_MS = 32;
 
 /** Work-area fill is only for compositors that ignore gtk_window_maximize. */
 export function shouldFakeMaximizeFallback(platform: AppPlatform): boolean {
@@ -46,6 +53,13 @@ export function tauriDragRegion(_platform: AppPlatform): "false" | "deep" {
 
 export function osMaximizeWaitMs(allowFakeFallback: boolean): number {
   return allowFakeFallback ? LINUX_MAXIMIZE_WAIT_MS : 0;
+}
+
+export function scheduleCaptionButtonToggle(
+  fn: () => void,
+  deferMs: number = CAPTION_BUTTON_TOGGLE_DEFER_MS,
+): ReturnType<typeof setTimeout> {
+  return setTimeout(fn, Math.max(0, deferMs));
 }
 
 /** Double-click / mousedown(detail=2) must not toggle twice. */
@@ -94,7 +108,8 @@ async function readLogicalBounds(
       w: size.width / f,
       h: size.height / f,
     };
-  } catch {
+  } catch (error) {
+    console.warn("[windowChrome] reading restore bounds failed", error);
     return null;
   }
 }
@@ -127,7 +142,8 @@ async function fillMonitorWorkArea(
     if (!(bounds.w > 80 && bounds.h > 80)) return false;
     await applyLogicalBounds(w, bounds);
     return true;
-  } catch {
+  } catch (error) {
+    console.warn("[windowChrome] Linux work-area fill failed", error);
     return false;
   }
 }
@@ -143,19 +159,13 @@ async function waitForOsMaximized(
 ): Promise<boolean> {
   const start = Date.now();
   for (;;) {
-    const v = await w.isMaximized().catch(() => false);
+    const v = await w.isMaximized();
     if (v === expect) return v;
     if (Date.now() - start >= timeoutMs) return v;
     await new Promise((r) => setTimeout(r, OS_MAXIMIZE_POLL_MS));
   }
 }
 
-/**
- * Maximize / restore. Prefers the OS API; on Linux Wayland no-ops, fills
- * the work area and treats that as maximized until the next toggle.
- * Windows/mac: one OS call, no wait, no setSize. Returns the intended
- * caption state; onResized corrects the glyph if the OS disagrees.
- */
 export async function minimizeWindowReliable(): Promise<void> {
   if (detectAppPlatform() === "win") {
     await windowCaptionAction("minimize");
@@ -164,71 +174,53 @@ export async function minimizeWindowReliable(): Promise<void> {
   await getCurrentWindow().minimize();
 }
 
-export async function toggleMaximizeReliable(): Promise<boolean> {
+/**
+ * Maximize / restore. Prefers the OS API; on Linux Wayland no-ops, fills
+ * the work area and treats that as maximized until the next toggle.
+ * Windows delegates query/mutation ordering to the native toggle. Caption
+ * state is synchronized separately from IPC completion.
+ */
+export async function toggleMaximizeReliable(): Promise<boolean | void> {
   const w = getCurrentWindow();
   const platform = detectAppPlatform();
-  const allowFake = shouldFakeMaximizeFallback(platform);
-
   if (platform === "win") {
-    // Native ShowWindowAsync posts straight to the HWND owner. Do not read
-    // isMaximized first: that would put another IPC round-trip before action.
     await windowCaptionAction("toggleMaximize");
-    return w.isMaximized().catch(() => false);
-  }
-
-  if (!allowFake) {
     fakeMaximized = false;
     restoreBounds = null;
-    // Ask the window manager to toggle directly. Reading isMaximized first
-    // adds a round trip before the visible action and can go stale on rapid
-    // clicks; the resize event reconciles the caption state afterward.
-    try {
-      await w.toggleMaximize();
-    } catch {
-      // Keep the older explicit path as a recovery for hosts that reject the
-      // toggle command; this is exceptional, not part of the normal click path.
-      const wasMaximized = await w.isMaximized().catch(() => false);
-      try {
-        if (wasMaximized) await w.unmaximize();
-        else await w.maximize();
-      } catch {
-        /* ignore */
-      }
-    }
-    return w.isMaximized().catch(() => false);
+    return;
+  }
+  const allowFake = shouldFakeMaximizeFallback(platform);
+  const wasOs = await w.isMaximized();
+
+  if (!allowFake) {
+    if (wasOs) await w.unmaximize();
+    else await w.maximize();
+    fakeMaximized = false;
+    restoreBounds = null;
+    return !wasOs;
   }
 
-  const wasOs = await w.isMaximized().catch(() => false);
   const waitMs = osMaximizeWaitMs(true);
   const was = wasOs || fakeMaximized;
 
   if (was) {
-    fakeMaximized = false;
     if (wasOs) {
-      try {
-        await w.unmaximize();
-      } catch {
-        /* ignore */
-      }
+      await w.unmaximize();
       await waitForOsMaximized(w, false, waitMs);
     }
     if (restoreBounds) {
-      const prev = restoreBounds;
+      await applyLogicalBounds(w, restoreBounds);
       restoreBounds = null;
-      try {
-        await applyLogicalBounds(w, prev);
-      } catch {
-        /* ignore */
-      }
     }
-    return w.isMaximized().catch(() => false);
+    fakeMaximized = false;
+    return w.isMaximized();
   }
 
   const before = await readLogicalBounds(w);
   try {
     await w.maximize();
-  } catch {
-    /* some compositors reject maximize() */
+  } catch (error) {
+    console.warn("[windowChrome] maximize failed; trying Linux fallback", error);
   }
   const nowOs = await waitForOsMaximized(w, true, waitMs);
   if (nowOs) {
@@ -240,7 +232,7 @@ export async function toggleMaximizeReliable(): Promise<boolean> {
   if (before) restoreBounds = before;
   const filled = await fillMonitorWorkArea(w);
   fakeMaximized = filled;
-  return filled || (await w.isMaximized().catch(() => false));
+  return filled || (await w.isMaximized());
 }
 
 export async function toggleMaximizeFromTitlebar(): Promise<void> {
@@ -249,7 +241,7 @@ export async function toggleMaximizeFromTitlebar(): Promise<void> {
   lastTitlebarMaximizeMs = now;
   try {
     await toggleMaximizeReliable();
-  } catch {
-    /* browser / no window API */
+  } catch (error) {
+    console.warn("[windowChrome] titlebar toggle failed", error);
   }
 }

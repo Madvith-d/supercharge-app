@@ -1,5 +1,6 @@
 /** Merged ta message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { taCore } from "./core";
 import { taSidebar } from "./sidebar";
 import { taProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const ta: Record<MessageKey, string> = {
   ...taCore,
   ...updateMessages["ta"],
+  ...pluginApiMessages.ta,
   ...taSidebar,
   ...taProject,
   ...taSession,

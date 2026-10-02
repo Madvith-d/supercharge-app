@@ -11,6 +11,7 @@ import type {
   SessionSnapshot,
 } from "../session";
 import { IDLE_SNAPSHOT } from "../session";
+import type { CliSessionSource } from "../sessionCliSource";
 import {
   SESSION_CONNECT_CLIENT_TIMEOUT_MS,
   SESSION_STOP_CLIENT_TIMEOUT_MS,
@@ -373,6 +374,8 @@ export async function sessionsList() {
       title: string;
       updatedAt: string;
       modelId: string | null;
+      agentSessionId?: string | null;
+      cliSource?: CliSessionSource | null;
       /** Per-session reasoning effort when stored on meta. */
       effort?: string | null;
       archived?: boolean;
@@ -539,6 +542,12 @@ export type CliSessionSearchHit = CliSessionSummary & {
   /** `"cli"` from `grok sessions search`, `"local"` for disk fallback. */
   source: "cli" | "local" | string;
 };
+
+/** Inventory CLI history; changed rows arrive through sessions://changed. */
+export async function cliHistorySync(): Promise<boolean> {
+  if (!isTauri() || isMirrorClient()) return false;
+  return invoke<boolean>("cli_history_sync");
+}
 
 export async function cliSessionsList() {
   return invoke<CliSessionSummary[]>("cli_sessions_list");

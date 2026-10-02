@@ -579,6 +579,10 @@ impl SessionManager {
             }
         };
 
+        // Shared-session tenants can hold the same client in multiple slots.
+        let mut seen = HashSet::new();
+        acps.retain(|acp| seen.insert(Arc::as_ptr(acp)));
+
         DrainedAgents {
             acps,
             had_live_shell,

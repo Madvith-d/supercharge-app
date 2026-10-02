@@ -352,6 +352,7 @@ pub struct AcpClient {
     event_tx: mpsc::UnboundedSender<(Option<String>, AcpEvent)>,
     agent_session_id: ParkingMutex<Option<String>>,
     browser_binding: ParkingMutex<Option<crate::browser_bridge::BrowserBinding>>,
+    managed_plugin_session: ParkingMutex<Option<(String, String, Value)>>,
     #[allow(dead_code)]
     cli_path: PathBuf,
     cwd: PathBuf,
@@ -370,6 +371,7 @@ pub struct AcpClient {
     last_update_unstamped: ParkingMutex<Option<Instant>>,
     /// Official side-channel: skip App MCP inject on session/new.
     empty_mcp_servers: bool,
+    cli_history_lease: ParkingMutex<Option<std::fs::File>>,
     /// Effective `--sandbox` profile at spawn (process-level gate for parked reuse).
     sandbox_profile: ParkingMutex<Option<String>>,
     /// Route class at spawn: custom relay (api_key, no OIDC) vs official OIDC.
@@ -1049,6 +1051,7 @@ impl AcpClient {
             event_tx: event_tx.clone(),
             agent_session_id: ParkingMutex::new(None),
             browser_binding: ParkingMutex::new(None),
+            managed_plugin_session: ParkingMutex::new(None),
             cli_path,
             cwd,
             stopped: AtomicBool::new(false),
@@ -1058,6 +1061,7 @@ impl AcpClient {
             last_update_by_session: ParkingMutex::new(HashMap::new()),
             last_update_unstamped: ParkingMutex::new(None),
             empty_mcp_servers,
+            cli_history_lease: ParkingMutex::new(None),
             sandbox_profile: ParkingMutex::new(sandbox.map(|sb| sb.profile.clone())),
             custom_route,
             rewind_supported: ParkingMutex::new(None),
@@ -1147,6 +1151,7 @@ impl AcpClient {
             event_tx,
             agent_session_id: ParkingMutex::new(None),
             browser_binding: ParkingMutex::new(None),
+            managed_plugin_session: ParkingMutex::new(None),
             cli_path: PathBuf::from(format!("tcp://{addr}")),
             cwd,
             stopped: AtomicBool::new(false),
@@ -1157,6 +1162,7 @@ impl AcpClient {
             last_update_unstamped: ParkingMutex::new(None),
             // TCP connect path keeps default MCP inject (not official side-channel).
             empty_mcp_servers: false,
+            cli_history_lease: ParkingMutex::new(None),
             sandbox_profile: ParkingMutex::new(None),
             // Remote ACP: treat as official-class for reuse (no local auth strip).
             custom_route: false,
@@ -1181,6 +1187,82 @@ impl AcpClient {
         match crate::browser_bridge::bind(session_id) {
             Ok(next) => *binding = Some(next),
             Err(error) => warn!(%error, "in-app browser tools unavailable for session"),
+        }
+    }
+
+    pub fn bind_managed_plugin_session(&self, session_id: &str) {
+        if !self.owns_local_process_tree || self.empty_mcp_servers || !cfg!(target_os = "linux") {
+            self.managed_plugin_session.lock().take();
+            return;
+        }
+        match crate::managed_plugin_bridge::entry_for_session(session_id) {
+            Ok(Some(entry)) => match crate::managed_plugin_bridge::state_generation(session_id) {
+                Ok(generation) => {
+                    *self.managed_plugin_session.lock() =
+                        Some((session_id.to_string(), generation, entry));
+                }
+                Err(error) => {
+                    crate::managed_plugin_bridge::fail(session_id, error.clone());
+                    warn!(session = %session_id, %error, "managed MCP binding unavailable");
+                    self.managed_plugin_session.lock().take();
+                }
+            },
+            Ok(None) => {
+                self.managed_plugin_session.lock().take();
+            }
+            Err(error) => {
+                crate::managed_plugin_bridge::fail(session_id, error.clone());
+                warn!(session = %session_id, %error, "managed MCP binding unavailable");
+                self.managed_plugin_session.lock().take();
+            }
+        }
+    }
+
+    fn append_managed_plugin_entry(&self, mcp_servers: &mut Value) -> Result<(), String> {
+        let Some((session_id, _, entry)) = self.managed_plugin_session.lock().clone() else {
+            return Ok(());
+        };
+        let result: Result<(), String> = (|| {
+            let servers = mcp_servers
+                .as_array_mut()
+                .ok_or_else(|| "ACP mcpServers payload must be an array".to_string())?;
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Managed MCP bridge entry has no name".to_string())?;
+            if servers
+                .iter()
+                .any(|server| server.get("name").and_then(Value::as_str) == Some(name))
+            {
+                return Err("Managed MCP bridge name collides with an existing server".into());
+            }
+            servers.push(entry);
+            Ok(())
+        })();
+        if let Err(error) = result.as_ref() {
+            self.managed_plugin_session.lock().take();
+            crate::managed_plugin_bridge::fail(&session_id, error.clone());
+            warn!(session = %session_id, %error, "managed MCP injection skipped");
+            return Ok(());
+        }
+        result
+    }
+
+    pub fn managed_plugin_session_matches(&self, session_id: &str, generation: &str) -> bool {
+        self.managed_plugin_session.lock().as_ref().is_some_and(
+            |(bound_session, bound_generation, _)| {
+                bound_session == session_id && bound_generation == generation
+            },
+        )
+    }
+
+    pub fn clear_managed_plugin_session(&self, session_id: &str) {
+        let mut binding = self.managed_plugin_session.lock();
+        if binding
+            .as_ref()
+            .is_some_and(|(bound_session, _, _)| bound_session == session_id)
+        {
+            binding.take();
         }
     }
 
@@ -2285,6 +2367,27 @@ impl AcpClient {
         fork_session: bool,
         cwd: &str,
     ) -> Result<(String, bool), AgentError> {
+        self.open_session_at_policy(resume_session_id, fork_session, cwd, false)
+            .await
+    }
+
+    /// Native history continuation must never silently become a journal bootstrap.
+    pub async fn load_session_strict(
+        &self,
+        session_id: &str,
+    ) -> Result<(String, bool), AgentError> {
+        self.initialize_and_auth().await?;
+        self.open_session_at_policy(Some(session_id), false, &self.cwd.to_string_lossy(), true)
+            .await
+    }
+
+    async fn open_session_at_policy(
+        &self,
+        resume_session_id: Option<&str>,
+        fork_session: bool,
+        cwd: &str,
+        require_resume: bool,
+    ) -> Result<(String, bool), AgentError> {
         let cwd = cwd.to_string();
         if !crate::ssh_remote::acp_session_cwd_ok(self.ssh_alias.as_deref(), &cwd) {
             return Err(AgentError::new(
@@ -2352,6 +2455,9 @@ impl AcpClient {
             }
         }
 
+        self.append_managed_plugin_entry(&mut mcp_servers)
+            .map_err(|error| AgentError::new(AgentErrorCode::AgentCrashed, error))?;
+
         if let Some(rid) = resume_session_id.map(str::trim).filter(|s| !s.is_empty()) {
             // CLI `--fork-session`: new agent session id with parent context.
             if fork_session {
@@ -2397,6 +2503,13 @@ impl AcpClient {
                             .and_then(|v| v.as_str())
                             .unwrap_or(rid)
                             .to_string();
+                        if require_resume && sid != rid {
+                            return Err(AgentError::new(
+                                AgentErrorCode::ConnectFailed,
+                                "Native history load returned a different session identity"
+                                    .to_string(),
+                            ));
+                        }
                         info!("acp session/load ok sessionId={sid}");
                         *self.agent_session_id.lock() = Some(sid.clone());
                         let model_id = result
@@ -2414,6 +2527,11 @@ impl AcpClient {
                         return Ok((sid, true));
                     }
                     Err(e) => {
+                        if require_resume {
+                            return Err(
+                                self.map_handshake_err("session/load (native history required)", e)
+                            );
+                        }
                         warn!("acp session/load fail ({e}); falling back to session/new");
                     }
                 }
@@ -2568,6 +2686,7 @@ impl AcpClient {
                 servers.push(entry);
             }
         }
+        self.append_managed_plugin_entry(&mut mcp_servers)?;
         self.request_timeout(
             "_x.ai/session/update_mcp_servers",
             json!({
@@ -2579,7 +2698,35 @@ impl AcpClient {
         .await
     }
 
-    /// Switch model on the live agent session (`session/set_model`).
+    pub async fn managed_mcp_list_for(&self, session_id: &str) -> Result<Value, String> {
+        self.request_timeout(
+            "x.ai/mcp/list",
+            json!({ "sessionId": session_id, "cache": false }),
+            HANDSHAKE_TIMEOUT_SECS,
+        )
+        .await
+    }
+
+    pub async fn managed_mcp_call_for(
+        &self,
+        session_id: &str,
+        server: &str,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<Value, String> {
+        self.request_timeout(
+            "x.ai/mcp/call",
+            json!({
+                "sessionId": session_id,
+                "server": server,
+                "tool": tool,
+                "arguments": arguments,
+            }),
+            HANDSHAKE_TIMEOUT_SECS,
+        )
+        .await
+    }
+
     /// Switch model on the live agent session (`session/set_model`).
     /// Uses the process's most recently bound agent session id.
     pub async fn set_model(&self, model_id: &str) -> Result<(), String> {
@@ -2913,22 +3060,13 @@ impl AcpClient {
             // last-turn fallback retry.
             return Err("rewind method not supported (not advertised by agent initialize)".into());
         }
-        // Prefer conversation truncate; file restore is optional (edit-resend usually false).
-        let mut params = json!({
-            "sessionId": session_id,
-            "targetPromptIndex": target_prompt_index,
-        });
-        if let Some(obj) = params.as_object_mut() {
-            obj.insert("restoreFiles".into(), Value::Bool(restore_files));
-            // Some builds accept this camelCase alias.
-            obj.insert("restore_files".into(), Value::Bool(restore_files));
-        }
+        let params = wire_rewind_execute_params(session_id, target_prompt_index, restore_files);
         let mut last_err = String::new();
         for method in rewind_execute_method_candidates() {
             match self.request(method, params.clone()).await {
                 Ok(v) => {
                     *self.rewind_supported.lock() = Some(true);
-                    return Ok(v);
+                    return validate_rewind_execute_result(v);
                 }
                 Err(e) if rpc_looks_like_method_not_found(&e) => {
                     last_err = e;
@@ -3024,8 +3162,13 @@ impl AcpClient {
         self.owns_local_process_tree
     }
 
+    pub fn hold_cli_history_lease(&self, lease: std::fs::File) {
+        *self.cli_history_lease.lock() = Some(lease);
+    }
+
     pub async fn kill(&self) {
         self.browser_binding.lock().take();
+        self.managed_plugin_session.lock().take();
         // Stop both halves of the transport before touching the child. This is
         // essential for TCP ACP: closing only the writer left the reader task
         // alive and allowed ghost events from a remote peer after recycle.
@@ -3071,6 +3214,7 @@ impl AcpClient {
         }
 
         *self.stdin.lock().await = None;
+        self.cli_history_lease.lock().take();
         self.last_update_by_session.lock().clear();
         *self.last_update_unstamped.lock() = None;
     }
@@ -3205,9 +3349,132 @@ pub fn rpc_looks_like_method_not_found(err: &str) -> bool {
         || lower.contains("method not supported")
 }
 
+fn wire_rewind_execute_params(
+    session_id: &str,
+    target_prompt_index: u32,
+    restore_files: bool,
+) -> Value {
+    json!({
+        "sessionId": session_id,
+        "targetPromptIndex": target_prompt_index,
+        // Without force, the CLI only previews the rewind.
+        "force": true,
+        "mode": if restore_files { "all" } else { "conversation_only" },
+        "restoreFiles": restore_files,
+        "restore_files": restore_files,
+    })
+}
+
+fn validate_rewind_execute_result(result: Value) -> Result<Value, String> {
+    if result.get("success").and_then(Value::as_bool) == Some(true) {
+        return Ok(result);
+    }
+    let error = result
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|error| !error.is_empty())
+        .unwrap_or("agent did not confirm rewind execution");
+    Err(format!("rewind execution failed: {error}"))
+}
+
 /// Wire method names for conversation rewind (canonical, then stdio underscore).
 pub fn rewind_execute_method_candidates() -> &'static [&'static str] {
     &["x.ai/rewind/execute", "_x.ai/rewind/execute"]
+}
+
+#[cfg(test)]
+mod rewind_execute_tests {
+    use super::*;
+
+    #[test]
+    fn conversation_rewind_commits_without_restoring_files() {
+        assert_eq!(
+            wire_rewind_execute_params("child-session", 7, false),
+            json!({
+                "sessionId": "child-session",
+                "targetPromptIndex": 7,
+                "force": true,
+                "mode": "conversation_only",
+                "restoreFiles": false,
+                "restore_files": false,
+            })
+        );
+    }
+
+    #[test]
+    fn file_restore_commits_conversation_and_files() {
+        assert_eq!(
+            wire_rewind_execute_params("child-session", 0, true),
+            json!({
+                "sessionId": "child-session",
+                "targetPromptIndex": 0,
+                "force": true,
+                "mode": "all",
+                "restoreFiles": true,
+                "restore_files": true,
+            })
+        );
+    }
+
+    #[test]
+    fn successful_rewind_preserves_response() {
+        let result = json!({
+            "success": true,
+            "target_prompt_index": 7,
+            "mode": "conversation_only",
+            "reverted_files": [],
+            "prompt_text": "synthetic prompt",
+            "error": null,
+        });
+        assert_eq!(validate_rewind_execute_result(result.clone()), Ok(result));
+    }
+
+    #[test]
+    fn unsuccessful_rewind_preserves_agent_error() {
+        let result = json!({
+            "success": false,
+            "error": "Cannot rewind to prompt #7 — current prompt index is 2",
+        });
+        assert_eq!(
+            validate_rewind_execute_result(result),
+            Err(
+                "rewind execution failed: Cannot rewind to prompt #7 — current prompt index is 2"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn preview_without_error_is_not_success() {
+        let result = json!({
+            "success": false,
+            "target_prompt_index": 0,
+            "clean_files": [],
+            "conflicts": [],
+            "error": null,
+        });
+        assert_eq!(
+            validate_rewind_execute_result(result),
+            Err("rewind execution failed: agent did not confirm rewind execution".into())
+        );
+    }
+
+    #[test]
+    fn missing_or_invalid_success_is_not_confirmation() {
+        for result in [
+            json!({}),
+            json!(null),
+            json!({ "success": null }),
+            json!({ "success": "true" }),
+            json!({ "success": false, "error": "  " }),
+        ] {
+            assert_eq!(
+                validate_rewind_execute_result(result),
+                Err("rewind execution failed: agent did not confirm rewind execution".into())
+            );
+        }
+    }
 }
 
 /// Parse `initialize` for rewind support.

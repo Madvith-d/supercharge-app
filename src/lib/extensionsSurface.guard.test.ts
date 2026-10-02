@@ -12,7 +12,7 @@ describe("extensions settings surface guard", () => {
     )?.[1];
 
     expect(surface).toBeDefined();
-    for (const tab of ["plugins", "skills", "mcp", "hooks", "agents"]) {
+    for (const tab of ["plugins", "skills", "mcp", "managed-mcp", "hooks", "agents"]) {
       expect(surface).toContain(`tab === "${tab}"`);
     }
   });

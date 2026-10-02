@@ -10,6 +10,7 @@ import {
   applyResolvedSessionMedia,
   collectSessionRelativeMediaRefs,
   isDisplayableAttachmentPath,
+  isInlineAttachmentPath,
 } from "@/lib/attachments";
 import { extractAutomationPayload } from "@/lib/automationSetup";
 import { parseScheduledUserContent } from "@/lib/automations";
@@ -39,6 +40,15 @@ import {
   isSessionJournalTimeoutError,
   withJournalLoadDeadline,
 } from "./sessionJournalTimeout";
+
+const sourceJournalReads = new Map<string, symbol>();
+
+/** Order source reads across navigation and host-event refreshes. */
+export function beginSourceJournalRead(sessionId: string): () => boolean {
+  const request = Symbol();
+  sourceJournalReads.set(sessionId, request);
+  return () => sourceJournalReads.get(sessionId) === request;
+}
 
 export type JournalIo = {
   isTauri: () => boolean;
@@ -110,10 +120,13 @@ export function projectJournalToChat(opts: {
   stored: StoredJournalMessage[];
   cached: ChatMessage[] | undefined;
   liveState: SessionState | string | null | undefined;
+  sourceAuthoritative?: boolean;
 }): ChatMessage[] {
   return ensureBusyTurnStreaming(
     weaveToolsIntoAssistantSegments(
-      preferSessionMessages(opts.cached, mapStoredMessagesToChat(opts.stored)),
+      opts.sourceAuthoritative
+        ? mapStoredMessagesToChat(opts.stored)
+        : preferSessionMessages(opts.cached, mapStoredMessagesToChat(opts.stored)),
     ),
     opts.liveState,
   );
@@ -154,6 +167,7 @@ export function refineJournalAttachments(
       const nextAtts = msg.attachments
         .map((a) => {
           if (!isDisplayableAttachmentPath(a.path)) return null;
+          if (isInlineAttachmentPath(a.path)) return a;
           const remote = /^https?:\/\//i.test(a.path);
           const c = byPath.get(a.path);
           if (remote) {
@@ -189,6 +203,7 @@ async function refinePaintedJournal(opts: {
   sessionId: string;
   source: ChatMessage[];
   stillThisOpen: () => boolean;
+  canRefine?: () => boolean;
   io: JournalIo;
   store: typeof sessionTranscriptStore;
 }): Promise<void> {
@@ -211,7 +226,9 @@ async function refinePaintedJournal(opts: {
     ? applyResolvedSessionMedia(source, resolved)
     : source;
   const allPaths = pathSource.flatMap(
-    (m) => m.attachments?.map((a) => a.path) ?? [],
+    (m) => m.attachments
+      ?.map((a) => a.path)
+      .filter((path) => !isInlineAttachmentPath(path)) ?? [],
   );
   let classifyByPath: Map<string, PathClassify> | null = null;
   let classifyFailed = false;
@@ -228,6 +245,7 @@ async function refinePaintedJournal(opts: {
     classifyFailed = true;
   }
   if (!resolved.length && !classifyByPath && !classifyFailed) return;
+  if (opts.canRefine && !opts.canRefine()) return;
   const latest = store.getCached(sessionId) ?? source;
   const next = refineJournalAttachments(latest, {
     resolved,
@@ -245,6 +263,8 @@ export async function hydrateSessionJournal(opts: {
   stillThisOpen: () => boolean;
   liveState: SessionState | string | null | undefined;
   reconcile?: boolean;
+  /** Rechecked after I/O so continuation cannot be overwritten by a source read. */
+  sourceAuthoritative?: () => boolean;
   /** Override journal-load deadline (tests). Default: SESSION_JOURNAL_LOAD_TIMEOUT_MS. */
   loadTimeoutMs?: number;
   io?: JournalIo;
@@ -254,6 +274,12 @@ export async function hydrateSessionJournal(opts: {
   const store = opts.store ?? sessionTranscriptStore;
   const sessionId = opts.sessionId;
   const reconcile = opts.reconcile === true;
+  const sourceAuthoritative = opts.sourceAuthoritative?.() === true;
+  const latestSourceRead = sourceAuthoritative ? beginSourceJournalRead(sessionId) : () => true;
+  const cachedAtRead = store.getCached(sessionId);
+  const sourceReadIsCurrent = () => !sourceAuthoritative || (
+    latestSourceRead() && opts.sourceAuthoritative?.() === true && store.getCached(sessionId) === cachedAtRead
+  );
   const emptyUsage = restoreContextUsageForSession(sessionId, []);
   const loadTimeoutMs = opts.loadTimeoutMs ?? SESSION_JOURNAL_LOAD_TIMEOUT_MS;
 
@@ -262,9 +288,11 @@ export async function hydrateSessionJournal(opts: {
       io.sessionMessages(sessionId, { reconcile }),
       loadTimeoutMs,
     );
-    if (!opts.stillThisOpen()) {
+    if (!opts.stillThisOpen() || !sourceReadIsCurrent()) {
+      // A superseded open must not clear the newer open's loading indicator.
+      if (sourceAuthoritative && opts.stillThisOpen()) store.abortJournalLoad(sessionId);
       // First open: keep cache warm. Deferred reconcile: just drop.
-      if (!reconcile) {
+      if (!reconcile && !sourceAuthoritative) {
         try {
           const mappedEarly = mapStoredMessagesToChat(stored);
           store.cacheSession(
@@ -289,6 +317,7 @@ export async function hydrateSessionJournal(opts: {
       stored,
       cached: store.getCached(sessionId),
       liveState: opts.liveState,
+      sourceAuthoritative,
     });
 
     if (
@@ -313,12 +342,17 @@ export async function hydrateSessionJournal(opts: {
     store.setMessages(stripped);
     if (!reconcile) store.finishJournalLoad(sessionId);
 
+    const paintedCache = store.getCached(sessionId);
     const refinePromise = reconcile
       ? undefined
       : refinePaintedJournal({
           sessionId,
           source: store.getCached(sessionId) ?? chosen,
           stillThisOpen: opts.stillThisOpen,
+          canRefine: sourceAuthoritative
+            ? () => latestSourceRead() && opts.stillThisOpen() && opts.sourceAuthoritative?.() === true &&
+                store.getCached(sessionId) === paintedCache
+            : undefined,
           io,
           store,
         });
@@ -347,6 +381,16 @@ export async function hydrateSessionJournal(opts: {
         reconcile,
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+    if (sourceAuthoritative && (!opts.stillThisOpen() || !sourceReadIsCurrent())) {
+      if (opts.stillThisOpen()) store.abortJournalLoad(sessionId);
+      return {
+        status: "aborted",
+        painted: store.getCached(sessionId) ?? [],
+        changesFromHistory: [],
+        scheduledFromJournal: false,
+        usage: emptyUsage,
+      };
     }
     if (reconcile) {
       return {

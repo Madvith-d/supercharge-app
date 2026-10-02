@@ -111,6 +111,8 @@ export const ruSession = {
   "session.move.ghostMany": "Чатов: {n}",
   "session.deleteTitle": "Удалить чат",
   "session.deleteConfirm": "Удалить «{name}» навсегда? Это действие нельзя отменить.",
+  "session.deleteExternalConfirm": "Убрать «{name}» из приложения? Исходная история CLI не будет удалена.",
+  "session.deleteExternalNote": "Внешние истории CLI удаляются только из приложения. Исходные файлы не будут удалены.",
   "session.deleteManyTitle": "Удалить чаты",
   "session.deleteManyConfirm": "Удалить {n} чатов навсегда? Это действие нельзя отменить.",
   "session.menu": "Меню сессии",

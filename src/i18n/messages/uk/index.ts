@@ -1,5 +1,6 @@
 /** Merged uk message catalog by domain. */
 import { updateMessages } from "../../updates";
+import { pluginApiMessages } from "../../pluginApi";
 import { ukCore } from "./core";
 import { ukSidebar } from "./sidebar";
 import { ukProject } from "./project";
@@ -30,6 +31,7 @@ import type { MessageKey } from "../en";
 export const uk: Record<MessageKey, string> = {
   ...ukCore,
   ...updateMessages["uk"],
+  ...pluginApiMessages.uk,
   ...ukSidebar,
   ...ukProject,
   ...ukSession,

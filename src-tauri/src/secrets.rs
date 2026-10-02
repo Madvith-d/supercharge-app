@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 
-use crate::paths::{ensure_app_dirs, secrets_file};
+use crate::paths::{ensure_app_dirs, ensure_app_dirs_initialized, secrets_file};
 use crate::store::SecretsFile;
 
 /// Reverse-DNS service id for Supercharge-owned credentials.
@@ -355,7 +355,7 @@ fn invalidate_session_cache() {
 
 /// Read `secrets.json` only — no Keychain unlock. Safe for cold-start UI.
 pub fn load_secrets_disk_only() -> SecretsFile {
-    let _ = ensure_app_dirs();
+    let _ = ensure_app_dirs_initialized();
     read_disk_secrets(&secrets_file())
 }
 

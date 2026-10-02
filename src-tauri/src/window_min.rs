@@ -6,7 +6,10 @@
 //! min to half the current monitor work area (taskbar excluded). Large
 //! displays keep 900×600; moving onto a bigger screen restores that floor.
 
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Mutex,
+};
 
 use tauri::{AppHandle, LogicalSize, Manager, Monitor};
 
@@ -100,12 +103,69 @@ fn min_cache_key(min_w: f64, min_h: f64, scale: f64) -> (u32, u32, u32) {
     )
 }
 
-/// Recompute OS min from the main window's current monitor.
-pub fn apply_main(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
+const SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+static UPDATE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static UPDATE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Keep one pending update and wait until native geometry events settle.
+pub fn schedule_main(app: &AppHandle) {
+    UPDATE_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if UPDATE_PENDING.swap(true, Ordering::SeqCst) {
         return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let generation = UPDATE_GENERATION.load(Ordering::SeqCst);
+            tokio::time::sleep(SETTLE_DELAY).await;
+            if generation != UPDATE_GENERATION.load(Ordering::SeqCst) {
+                continue;
+            }
+            let target = app.clone();
+            if let Err(error) = app.run_on_main_thread(move || {
+                UPDATE_PENDING.store(false, Ordering::SeqCst);
+                if generation != UPDATE_GENERATION.load(Ordering::SeqCst) || apply_main(&target) {
+                    schedule_main(&target);
+                }
+            }) {
+                UPDATE_PENDING.store(false, Ordering::SeqCst);
+                tracing::warn!(%error, "could not dispatch minimum window size update");
+            }
+            break;
+        }
+    });
+}
+
+fn can_adjust_geometry(minimized: bool, maximized: bool, fullscreen: bool, visible: bool) -> bool {
+    !minimized && !maximized && !fullscreen && visible
+}
+
+/// Record constraints already applied by successful window creation.
+pub fn remember_configured_min(min_w: f64, min_h: f64, scale: f64) {
+    *LAST_MIN.lock().unwrap_or_else(|e| e.into_inner()) = Some(min_cache_key(min_w, min_h, scale));
+}
+
+fn after_pointer_release(pointer_down: bool, apply: impl FnOnce()) -> bool {
+    if pointer_down {
+        return true;
+    }
+    apply();
+    false
+}
+
+/// Returns true when a held pointer requires another deferred attempt.
+fn apply_main(app: &AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
     };
-    let maximized = window.is_maximized().unwrap_or(false);
+    if !can_adjust_geometry(
+        window.is_minimized().unwrap_or(true),
+        window.is_maximized().unwrap_or(true),
+        window.is_fullscreen().unwrap_or(true),
+        window.is_visible().unwrap_or(false),
+    ) {
+        return false;
+    }
     let pointer_down = {
         #[cfg(windows)]
         {
@@ -116,23 +176,82 @@ pub fn apply_main(app: &AppHandle) {
             false
         }
     };
-    let (cw, ch) = comfort_from_config(app);
-    let monitor = window.current_monitor().ok().flatten();
-    let (min_w, min_h) = cap_for_monitor(cw, ch, monitor.as_ref());
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let next = min_cache_key(min_w, min_h, scale);
-    let mut last = LAST_MIN.lock().unwrap_or_else(|e| e.into_inner());
-    if !should_commit_min(maximized, pointer_down, *last, next) {
-        return;
-    }
-    *last = Some(next);
-    drop(last);
-    let _ = window.set_min_size(Some(LogicalSize::new(min_w, min_h)));
+    after_pointer_release(pointer_down, || {
+        let (cw, ch) = comfort_from_config(app);
+        let Ok(Some(monitor)) = window.current_monitor() else {
+            return;
+        };
+        let (min_w, min_h) = cap_for_monitor(cw, ch, Some(&monitor));
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let next = min_cache_key(min_w, min_h, scale);
+        let mut last = LAST_MIN.lock().unwrap_or_else(|e| e.into_inner());
+        if !should_commit_min(false, false, *last, next) {
+            return;
+        }
+        // Reserve before the setter, which can synchronously emit another move.
+        *last = Some(next);
+        drop(last);
+        if let Err(error) = window.set_min_size(Some(LogicalSize::new(min_w, min_h))) {
+            let mut last = LAST_MIN.lock().unwrap_or_else(|e| e.into_inner());
+            if *last == Some(next) {
+                *last = None;
+            }
+            tracing::warn!(%error, "minimum window size update failed");
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{should_commit_min, snap_friendly_min, snap_friendly_min_size};
+    use super::{
+        after_pointer_release, can_adjust_geometry, min_cache_key, should_commit_min,
+        snap_friendly_min, snap_friendly_min_size,
+    };
+
+    #[test]
+    fn paused_drag_retries_until_release_without_another_move() {
+        let mut applications = 0;
+        let mut pending = true;
+        for pointer_down in [true, true, false] {
+            assert!(pending);
+            pending = after_pointer_release(pointer_down, || applications += 1);
+        }
+        assert!(!pending);
+        assert_eq!(applications, 1);
+    }
+
+    #[test]
+    fn configured_minimum_skips_initial_visible_resize_but_tracks_monitor_change() {
+        let configured = min_cache_key(900.0, 540.0, 1.0);
+        assert!(!should_commit_min(
+            false,
+            false,
+            Some(configured),
+            configured
+        ));
+        assert!(should_commit_min(
+            false,
+            false,
+            Some(configured),
+            min_cache_key(640.0, 340.0, 1.5),
+        ));
+    }
+
+    #[test]
+    fn only_visible_restored_windows_allow_geometry_adjustment() {
+        for minimized in [false, true] {
+            for maximized in [false, true] {
+                for fullscreen in [false, true] {
+                    for visible in [false, true] {
+                        assert_eq!(
+                            can_adjust_geometry(minimized, maximized, fullscreen, visible),
+                            !minimized && !maximized && !fullscreen && visible
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn half_of_1440_beats_comfort_900() {

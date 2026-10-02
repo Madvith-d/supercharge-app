@@ -111,6 +111,8 @@ export const zhTWSession = {
   "session.move.ghostMany": "{n} 個對話",
   "session.deleteTitle": "刪除對話",
   "session.deleteConfirm": "確定永久刪除「{name}」？此操作無法復原。",
+  "session.deleteExternalConfirm": "從應用程式中移除「{name}」？原始 CLI 歷史記錄不會被刪除。",
+  "session.deleteExternalNote": "外部 CLI 歷史記錄只會從應用程式中移除，原始檔案不會被刪除。",
   "session.deleteManyTitle": "刪除對話",
   "session.deleteManyConfirm": "確定永久刪除 {n} 個對話？此操作無法復原。",
   "session.menu": "對話選單",

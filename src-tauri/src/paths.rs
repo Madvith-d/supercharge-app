@@ -10,19 +10,21 @@ use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
+mod init;
 mod legacy_app_data_migration;
+
+#[cfg(test)]
+mod init_benchmark;
 
 #[cfg(test)]
 pub(crate) static APP_HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn app_data_root() -> PathBuf {
-    if let Some(custom) = std::env::var_os("SUPERCHARGE_APP_HOME")
-        .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var_os("GROK_APP_HOME").filter(|value| !value.is_empty()))
-    {
-        return PathBuf::from(custom);
-    }
-    default_app_data_root()
+    let root = init::effective_root(
+        std::env::var_os("SUPERCHARGE_APP_HOME").as_deref(),
+        std::env::var_os("GROK_APP_HOME").as_deref(),
+    );
+    std::path::absolute(&root).unwrap_or(root)
 }
 
 fn default_app_data_root() -> PathBuf {
@@ -33,9 +35,6 @@ fn default_app_data_root() -> PathBuf {
 }
 
 fn legacy_app_data_root() -> PathBuf {
-    if let Some(custom) = std::env::var_os("GROK_APP_HOME").filter(|value| !value.is_empty()) {
-        return PathBuf::from(custom);
-    }
     if let Some(proj) = ProjectDirs::from("com", "grokapp", "grok-app") {
         return proj.data_dir().to_path_buf();
     }
@@ -78,51 +77,14 @@ pub fn legacy_grok_home() -> PathBuf {
         .unwrap_or_else(|| crate::process_util::user_home().join(".grok"))
 }
 
+/// Uncached repair, synchronized with read-side initialization.
 pub fn ensure_app_dirs() -> std::io::Result<PathBuf> {
-    let root = app_data_root();
-    // Migration is best-effort: unreadable legacy data must never prevent the
-    // new namespace from starting. Without a marker, a later launch retries.
-    let _ = migrate_legacy_app_data_if_needed(&root);
-    std::fs::create_dir_all(root.join("projects"))?;
-    std::fs::create_dir_all(root.join("sessions"))?;
-    std::fs::create_dir_all(root.join("logs"))?;
-    // App-owned Supercharge profile when session_data_mode=independent.
-    std::fs::create_dir_all(root.join("agent-home"))?;
-    // Clipboard paste / picker-written attachment files.
-    std::fs::create_dir_all(root.join("attachments").join("paste"))?;
-    // Multi-account auth snapshots.
-    std::fs::create_dir_all(root.join("accounts"))?;
-    // Default workspace for chats with no user-picked project (agent file I/O).
-    std::fs::create_dir_all(general_workspace_dir())?;
-    // Wallpaper library (X downloads + Imagine outputs).
-    std::fs::create_dir_all(root.join("wallpapers").join("x"))?;
-    std::fs::create_dir_all(root.join("wallpapers").join("imagine"))?;
-    std::fs::create_dir_all(root.join("wallpapers").join("library"))?;
-    // Chat video cover frames (ffmpeg / client canvas JPEG).
-    std::fs::create_dir_all(root.join("cache").join("video-posters"))?;
-    // Chat image thumbs (resized JPEG for virtual-list remounts).
-    std::fs::create_dir_all(root.join("cache").join("image-thumbs"))?;
-    // Per-plugin UI storage stays inside the app namespace.
-    std::fs::create_dir_all(plugin_data_root())?;
-    // Appearance skin packs: local presets + inspect/upload staging.
-    std::fs::create_dir_all(skin_staging_inspect_dir())?;
-    std::fs::create_dir_all(skin_staging_upload_dir())?;
-    std::fs::create_dir_all(skin_catalog_cache_dir())?;
-    crate::skin_staging::gc_expired_staging();
-    Ok(root)
+    init::ensure(true)
 }
 
-fn migrate_legacy_app_data_if_needed(root: &Path) -> std::io::Result<()> {
-    // Explicit roots are used for tests, portable installs, and managed
-    // deployments. Importing a user's default legacy data into those locations
-    // would violate isolation and make resets non-deterministic.
-    if std::env::var_os("SUPERCHARGE_APP_HOME").is_some()
-        || std::env::var_os("GROK_APP_HOME").is_some()
-    {
-        return Ok(());
-    }
-    let source = legacy_app_data_root();
-    legacy_app_data_migration::migrate_legacy_app_data(&source, root)
+/// Initialize once per effective root and migration context; retry failures.
+pub fn ensure_app_dirs_initialized() -> std::io::Result<PathBuf> {
+    init::ensure(false)
 }
 
 /// `{app_data}/skin-presets` — local library + undo + staging.
@@ -196,8 +158,9 @@ pub fn resolve_agent_supercharge_home(session_data_mode: &str) -> PathBuf {
     if session_data_mode.trim().eq_ignore_ascii_case("shared") {
         return shared_supercharge_home();
     }
-    let _ = ensure_app_dirs();
-    agent_home_dir()
+    ensure_app_dirs_initialized()
+        .map(|root| root.join("agent-home"))
+        .unwrap_or_else(|_| agent_home_dir())
 }
 
 /// Temporary compatibility alias for internal callers not yet renamed. It now
@@ -211,8 +174,7 @@ pub fn resolve_agent_grok_home(session_data_mode: &str) -> PathBuf {
 /// `session_data_mode=shared` so third-party keys work without official login.
 pub fn resolve_inference_supercharge_home(session_data_mode: &str, custom_route: bool) -> PathBuf {
     if custom_route {
-        let _ = ensure_app_dirs();
-        return agent_home_dir();
+        return resolve_agent_supercharge_home("independent");
     }
     resolve_agent_supercharge_home(session_data_mode)
 }
@@ -383,8 +345,8 @@ mod tests {
 
     #[test]
     fn app_data_root_is_absolute_or_relative_path() {
-        let p = app_data_root();
-        assert!(!p.as_os_str().is_empty());
+        let home = init_benchmark::TestHome::new();
+        assert_eq!(app_data_root(), home.root);
     }
 
     #[test]
@@ -405,6 +367,7 @@ mod tests {
 
     #[test]
     fn inference_home_custom_route_uses_agent_home_even_when_shared() {
+        let _home = init_benchmark::TestHome::new();
         let shared_official = resolve_inference_grok_home("shared", false);
         assert!(
             shared_official.ends_with(".supercharge"),

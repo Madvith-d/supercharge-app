@@ -713,6 +713,7 @@ mod tests {
 
     #[test]
     fn remote_supercharge_home_matches_app_session_data_mode() {
+        let _home_lock = crate::paths::APP_HOME_ENV_LOCK.lock().unwrap();
         let mode = crate::store::load_settings().session_data_mode;
         let home = resolve_remote_supercharge_home();
         let expected = crate::paths::resolve_agent_supercharge_home(&mode);

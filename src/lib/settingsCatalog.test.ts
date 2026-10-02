@@ -176,6 +176,7 @@ describe("settingsCatalog", () => {
     expect(extNav?.tabs.map((t) => t.id)).toEqual([
       "plugins",
       "mcp",
+      "managed-mcp",
       "skills",
       "rules",
       "commands",

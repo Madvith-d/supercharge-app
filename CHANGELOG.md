@@ -13,6 +13,64 @@ See `docs/llm-wiki/release.md`.
 
 ## [Unreleased]
 
+### Fixed
+- Windows window controls and folder pickers respond more reliably under load.
+
+### Changed
+- Project and model selection respond sooner, with less background work while idle.
+
+## [0.2.47] - 2026-10-02
+
+> **Highlight:** CLI conversations appear automatically alongside App chats, including with custom providers.
+>
+> **中文 · 亮点：** CLI 对话自动显示在应用聊天列表中，自定义服务商也同样支持。
+
+### Added
+- CLI conversations appear automatically, even when a custom provider is selected. Opening history keeps terminal conversations intact, and continuing creates a separate App copy.
+
+### Fixed
+- Rewind and partial forks now commit the intended conversation boundary in the current CLI.
+- Continuing CLI history safely preserves existing conversation directories on Windows.
+
+**中文 · 新增**
+- CLI 对话自动显示，选择自定义服务商时也不例外。查看历史不会修改终端对话，继续聊天会创建独立的应用副本。
+
+**中文 · 修复**
+- 回退和部分分支现在会在当前 CLI 中实际提交预期的对话截断位置。
+- 在 Windows 上继续 CLI 历史时，会安全保留已有的对话目录。
+
+## [0.2.46] - 2026-10-01
+
+> **Highlight:** Manage reviewed plugin tools for the selected chat with safer startup and updates.
+>
+> **中文 · 亮点：** 可为选中的聊天管理已审核的插件工具，启动和更新也更稳妥。
+
+### Added
+- Startup logs now help identify slow initialization steps.
+- Reviewed plugin tools can be managed and applied to the selected local Linux chat. Installation requires explicit trust and enablement, and readiness requires a consented tool call.
+
+### Changed
+- Settings reads and startup avoid repeated filesystem setup and project-folder scans.
+- Expired appearance files are cleaned up in the background without touching active imports.
+- Window size and position are saved in the background.
+
+### Fixed
+- Windows minimize and maximize controls handle rapid clicks more reliably. Window-size updates no longer interrupt minimize or maximize transitions.
+- Remote projects no longer grant access to matching local folders.
+
+**中文 · 新增**
+- 启动日志可帮助定位初始化速度较慢的步骤。
+- 可为选中的本地 Linux 聊天管理和应用已审核的插件工具。安装后需明确授权并启用，只有经同意的工具调用成功后才会显示就绪。
+
+**中文 · 变更**
+- 设置读取和启动时减少重复的文件系统初始化与项目文件夹扫描。
+- 过期的外观文件在后台清理，不影响正在导入的文件。
+- 窗口大小和位置在后台保存。
+
+**中文 · 修复**
+- Windows 最小化和最大化按钮在快速点击时更可靠。调整窗口大小不再打断最小化或最大化过程。
+- 远程项目不再授予对路径相同的本地文件夹的访问权限。
+
 ## [0.2.45] - 2026-10-01
 
 > **Highlight:** Windows taskbar and tray updates no longer block window controls.

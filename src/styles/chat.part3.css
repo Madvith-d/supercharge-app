@@ -35,6 +35,8 @@
 
 .attach-chip:hover .attach-chip__x,
 .attach-chip:focus-within .attach-chip__x,
+.att-card-media:hover .attach-chip__x,
+.att-card-media:focus-within .attach-chip__x,
 .attach-chip__x:hover,
 .attach-chip__x:focus-visible {
   opacity: 1;
