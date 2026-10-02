@@ -1,4 +1,32 @@
 #[tauri::command]
+pub async fn plugin_api_catalog() -> Result<serde_json::Value, String> {
+    let url = "https://infra.xibeai.in/api/managed-mcp/catalog";
+    let response = reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|_| "Managed MCP catalog is unavailable".to_owned())?
+        .error_for_status()
+        .map_err(|_| "Managed MCP catalog is unavailable".to_owned())?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "Managed MCP catalog is unavailable".to_owned())?;
+    if bytes.len() > 256 * 1024 {
+        return Err("Managed MCP catalog exceeds 256 KiB".into());
+    }
+    let catalog: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "Managed MCP catalog is invalid".to_owned())?;
+    if catalog.get("schemaVersion").and_then(serde_json::Value::as_u64) != Some(1)
+        || catalog.get("plugins").and_then(serde_json::Value::as_array).is_none()
+    {
+        return Err("Managed MCP catalog is invalid".into());
+    }
+    Ok(catalog)
+}
+
+#[tauri::command]
 pub fn plugin_api_status(
     connection: State<'_, crate::plugin_api::PluginApiConnection>,
 ) -> crate::plugin_api::ConnectionStatus {

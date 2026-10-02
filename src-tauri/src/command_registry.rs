@@ -234,6 +234,7 @@ pub fn app_invoke_handler(
         commands::mcp_doctor,
         // ── Standalone Plugin API (desktop-only authenticated adapter) ──
         commands::plugin_api_status,
+        commands::plugin_api_catalog,
         commands::plugin_api_connect,
         commands::plugin_api_disconnect,
         commands::plugin_api_request,

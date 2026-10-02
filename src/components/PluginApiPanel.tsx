@@ -73,6 +73,8 @@ export function PluginApiPanel({
     useState<api.PluginApiConnectionStatus | null>(null);
   const [endpoint, setEndpoint] = useState("http://127.0.0.1:4319");
   const [plugins, setPlugins] = useState<api.PluginApiPublicPlugin[]>([]);
+  const [catalog, setCatalog] = useState<api.PluginApiCatalogEntry[]>([]);
+  const [catalogError, setCatalogError] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<InlineMcpDraft>(EMPTY_INLINE_MCP_DRAFT);
   const [validated, setValidated] = useState<api.PluginApiManifest | null>(null);
@@ -119,6 +121,15 @@ export function PluginApiPanel({
     },
     [],
   );
+
+  useEffect(() => {
+    if (!api.isDesktopHost()) return;
+    let cancelled = false;
+    void api.pluginApiCatalog()
+      .then((result) => { if (!cancelled) { setCatalog(result.plugins); setCatalogError(false); } })
+      .catch(() => { if (!cancelled) setCatalogError(true); });
+    return () => { cancelled = true; };
+  }, []);
 
   const loadPlugins = useCallback(
     async (
@@ -554,6 +565,43 @@ export function PluginApiPanel({
         disconnect={disconnect}
         refresh={() => refresh()}
       />
+
+      <section className="ext-ref-block">
+        <div className="ext-ref-block__head">
+          <IconPlug size={16} />
+          <h2 className="ext-ref-block__title">{tr("pluginApi.catalog.title")}</h2>
+          <span className="ext-ref-block__meta">{catalog.length}</span>
+        </div>
+        <p className="ext-ref-empty">{tr("pluginApi.catalog.description")}</p>
+        {catalogError && <p className="ext-ref-empty" role="status">{tr("pluginApi.catalog.unavailable")}</p>}
+        {!catalogError && catalog.length === 0 && <p className="ext-ref-empty">{tr("pluginApi.catalog.empty")}</p>}
+        <ul className="ext-ref-list">
+          {catalog.map((entry) => {
+            const installed = plugins.find((plugin) => plugin.id === entry.id);
+            return <li key={entry.id} className="ext-ref-row">
+              <div className="ext-ref-row__main">
+                <div className="ext-ref-row__icon" aria-hidden><IconPlug size={16} /></div>
+                <div className="ext-ref-row__body">
+                  <div className="ext-ref-row__title">{entry.name} · {entry.version}</div>
+                  <div className="ext-ref-row__desc">{entry.description}</div>
+                  <div className="ext-ref-row__meta">{entry.manifest.permissions.join(", ")} · SHA-256 {entry.source.sha256.slice(0, 16)}…</div>
+                </div>
+                <div className="ext-ref-row__end">
+                  <button type="button" className="btn btn--ghost btn--sm" disabled={!!busy || !connection?.connected || !!installed} onClick={() => { void run("install", async () => {
+                    if (!connection?.connectionId) return;
+                    const initial = await api.pluginApiInstall(connection.connectionId, entry.source, api.newPluginApiIdempotencyKey(`catalog-${entry.id}-${entry.version}`));
+                    const installed = await wait(initial);
+                    await loadPlugins(connection, installed?.id ?? entry.id);
+                    setNotice(tr("pluginApi.installed"));
+                  }); }}>
+                    {installed ? tr("pluginApi.catalog.installed") : tr("pluginApi.catalog.install")}
+                  </button>
+                </div>
+              </div>
+            </li>;
+          })}
+        </ul>
+      </section>
 
       {connection?.connected ? (
         <>

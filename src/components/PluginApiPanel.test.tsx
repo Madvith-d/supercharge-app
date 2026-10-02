@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   isDesktopHost: vi.fn(() => true),
   pluginApiStatus: vi.fn(),
+  pluginApiCatalog: vi.fn(),
   accountStatus: vi.fn(),
   pluginApiConnect: vi.fn(),
   pluginApiDisconnect: vi.fn(),
@@ -111,6 +112,7 @@ function plugin(
 }
 
 beforeEach(() => {
+  api.pluginApiCatalog.mockResolvedValue({ schemaVersion: 1, plugins: [] });
   api.isDesktopHost.mockReturnValue(true);
   api.accountStatus.mockResolvedValue(account);
   api.pluginApiBridgeStatus.mockResolvedValue({
@@ -142,6 +144,26 @@ afterEach(() => {
 });
 
 describe("PluginApiPanel", () => {
+  it("shows the shared catalog separately and installs its pinned release into the connected service", async () => {
+    api.pluginApiStatus.mockResolvedValue(connected);
+    api.pluginApiList.mockResolvedValue({ plugins: [] });
+    api.pluginApiCatalog.mockResolvedValue({ schemaVersion: 1, plugins: [{
+      id: "vectra-echo", name: "Echo MCP", version: "1.0.0", description: "Safe echo fixture",
+      source: { type: "archive", url: "https://infra.xibeai.in/managed-mcp/vectra-echo-1.0.0.tar.gz", sha256: "a".repeat(64) },
+      manifest: { ...plugin(1).manifest, id: "vectra-echo", name: "Echo MCP", userConfig: {} },
+    }] });
+    api.pluginApiInstall.mockResolvedValue({ id: "operation-1", status: "running" });
+    api.waitForPluginApiOperation.mockResolvedValue({ id: "operation-1", status: "succeeded", result: { id: "vectra-echo" } });
+    render(<PluginApiPanel locale="en" />);
+    await screen.findByText("Echo MCP · 1.0.0");
+    fireEvent.click(screen.getByRole("button", { name: "Install into this service" }));
+    await waitFor(() => expect(api.pluginApiInstall).toHaveBeenCalledWith(
+      "connection-1",
+      { type: "archive", url: "https://infra.xibeai.in/managed-mcp/vectra-echo-1.0.0.tar.gz", sha256: "a".repeat(64) },
+      "key-catalog-vectra-echo-1.0.0",
+    ));
+  });
+
   it("submits the Plugin API key once and clears the password field", async () => {
     api.pluginApiStatus.mockResolvedValue(disconnected);
     api.pluginApiConnect.mockResolvedValue(connected);

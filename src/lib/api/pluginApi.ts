@@ -38,6 +38,20 @@ export type PluginApiManifest = {
   >;
 };
 
+export type PluginApiCatalogEntry = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  source: { type: "archive"; url: string; sha256: string };
+  manifest: PluginApiManifest;
+};
+
+export async function pluginApiCatalog(): Promise<{ schemaVersion: 1; plugins: PluginApiCatalogEntry[] }> {
+  requireDesktop();
+  return invoke("plugin_api_catalog");
+}
+
 export type PluginApiSource =
   | { type: "inline"; manifest: PluginApiManifest }
   | { type: "archive"; url: string; sha256: string };
