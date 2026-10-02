@@ -24,6 +24,7 @@ import {
 import { UiCheck, UiSwitch } from "@/components/settings/shared";
 import { PluginApiDefinitionEditor } from "@/components/PluginApiDefinitionEditor";
 import { PluginApiConnectionSection } from "@/components/PluginApiConnectionSection";
+import { PluginApiCatalogSection } from "@/components/PluginApiCatalogSection";
 import { Select } from "@/components/Select";
 
 type BusyStep =
@@ -111,16 +112,13 @@ export function PluginApiPanel({
     ? verifyTool
     : (bridgeTools[0]?.name ?? "");
 
-  const updateDraft = useCallback(
-    (update: (current: InlineMcpDraft) => InlineMcpDraft) => {
-      setDraft((current) => update(current));
-      setValidated(null);
-      setReviewApproved(false);
-      setPermissionApproved(false);
-      setNotice(null);
-    },
-    [],
-  );
+  const updateDraft = useCallback((update: (current: InlineMcpDraft) => InlineMcpDraft) => {
+    setDraft((current) => update(current));
+    setValidated(null);
+    setReviewApproved(false);
+    setPermissionApproved(false);
+    setNotice(null);
+  }, []);
 
   useEffect(() => {
     if (!api.isDesktopHost()) return;
@@ -131,11 +129,7 @@ export function PluginApiPanel({
     return () => { cancelled = true; };
   }, []);
 
-  const loadPlugins = useCallback(
-    async (
-      status: api.PluginApiConnectionStatus,
-      preferId?: string | null,
-    ): Promise<api.PluginApiPublicPlugin[]> => {
+  const loadPlugins = useCallback(async (status: api.PluginApiConnectionStatus, preferId?: string | null): Promise<api.PluginApiPublicPlugin[]> => {
       if (!status.connected || !status.connectionId) {
         setPlugins([]);
         setSelectedId(null);
@@ -151,9 +145,7 @@ export function PluginApiPanel({
         return result.plugins[0]?.id ?? null;
       });
       return result.plugins;
-    },
-    [],
-  );
+    }, []);
 
   useEffect(() => {
     const ids = connection?.capabilities?.workspaceIds ?? [];
@@ -244,8 +236,7 @@ export function PluginApiPanel({
 
   const connect = async (event: FormEvent) => {
     event.preventDefault();
-    const input = apiKeyRef.current;
-    const apiKey = input?.value ?? "";
+    const input = apiKeyRef.current, apiKey = input?.value ?? "";
     await run("connect", async () => {
       try {
         const status = await api.pluginApiConnect(endpoint, apiKey);
@@ -268,8 +259,7 @@ export function PluginApiPanel({
   };
 
   const refresh = async (preferId?: string | null) => {
-    if (!connection) return;
-    await run("refresh", () => loadPlugins(connection, preferId));
+    if (connection) await run("refresh", () => loadPlugins(connection, preferId));
   };
 
   const importDefinition = () => {
@@ -513,11 +503,8 @@ export function PluginApiPanel({
     account?.profile.signedIn || account?.hasOfficialKey || account?.hasRelayKey,
   );
   const scopes = connection?.capabilities?.scopes?.join(", ") || "—";
-  const workspaces =
-    connection?.capabilities?.workspaceIds?.join(", ") || "—";
-  const configComplete = selected
-    ? requiredConfigurationComplete(selected)
-    : false;
+  const workspaces = connection?.capabilities?.workspaceIds?.join(", ") || "—";
+  const configComplete = selected ? requiredConfigurationComplete(selected) : false;
 
   if (!api.isDesktopHost()) {
     return <p className="ext-ref-empty">{tr("pluginApi.desktopOnly")}</p>;
@@ -566,42 +553,21 @@ export function PluginApiPanel({
         refresh={() => refresh()}
       />
 
-      <section className="ext-ref-block">
-        <div className="ext-ref-block__head">
-          <IconPlug size={16} />
-          <h2 className="ext-ref-block__title">{tr("pluginApi.catalog.title")}</h2>
-          <span className="ext-ref-block__meta">{catalog.length}</span>
-        </div>
-        <p className="ext-ref-empty">{tr("pluginApi.catalog.description")}</p>
-        {catalogError && <p className="ext-ref-empty" role="status">{tr("pluginApi.catalog.unavailable")}</p>}
-        {!catalogError && catalog.length === 0 && <p className="ext-ref-empty">{tr("pluginApi.catalog.empty")}</p>}
-        <ul className="ext-ref-list">
-          {catalog.map((entry) => {
-            const installed = plugins.find((plugin) => plugin.id === entry.id);
-            return <li key={entry.id} className="ext-ref-row">
-              <div className="ext-ref-row__main">
-                <div className="ext-ref-row__icon" aria-hidden><IconPlug size={16} /></div>
-                <div className="ext-ref-row__body">
-                  <div className="ext-ref-row__title">{entry.name} · {entry.version}</div>
-                  <div className="ext-ref-row__desc">{entry.description}</div>
-                  <div className="ext-ref-row__meta">{entry.manifest.permissions.join(", ")} · SHA-256 {entry.source.sha256.slice(0, 16)}…</div>
-                </div>
-                <div className="ext-ref-row__end">
-                  <button type="button" className="btn btn--ghost btn--sm" disabled={!!busy || !connection?.connected || !!installed} onClick={() => { void run("install", async () => {
-                    if (!connection?.connectionId) return;
-                    const initial = await api.pluginApiInstall(connection.connectionId, entry.source, api.newPluginApiIdempotencyKey(`catalog-${entry.id}-${entry.version}`));
-                    const installed = await wait(initial);
-                    await loadPlugins(connection, installed?.id ?? entry.id);
-                    setNotice(tr("pluginApi.installed"));
-                  }); }}>
-                    {installed ? tr("pluginApi.catalog.installed") : tr("pluginApi.catalog.install")}
-                  </button>
-                </div>
-              </div>
-            </li>;
-          })}
-        </ul>
-      </section>
+      <PluginApiCatalogSection
+        locale={locale}
+        catalog={catalog}
+        unavailable={catalogError}
+        installed={plugins}
+        busy={!!busy}
+        connected={!!connection?.connected}
+        onInstall={(entry) => { void run("install", async () => {
+          if (!connection?.connectionId) return;
+          const initial = await api.pluginApiInstall(connection.connectionId, entry.source, api.newPluginApiIdempotencyKey(`catalog-${entry.id}-${entry.version}`));
+          const installed = await wait(initial);
+          await loadPlugins(connection, installed?.id ?? entry.id);
+          setNotice(tr("pluginApi.installed"));
+        }); }}
+      />
 
       {connection?.connected ? (
         <>
