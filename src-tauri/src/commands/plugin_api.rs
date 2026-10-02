@@ -1,6 +1,6 @@
 #[tauri::command]
 pub async fn plugin_api_catalog() -> Result<serde_json::Value, String> {
-    let url = "https://raw.githubusercontent.com/iotserver24/supercharge-app/28a365592f2271a88909178621000b24e5373157/public/managed-mcp/catalog.json";
+    let url = "https://raw.githubusercontent.com/iotserver24/supercharge-app/de50dfa59e9b7b7d2ee77b3e1f732242ac84e012/public/managed-mcp/catalog.json";
     let response = reqwest::Client::new()
         .get(url)
         .timeout(std::time::Duration::from_secs(10))
