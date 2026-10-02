@@ -1,6 +1,6 @@
 #[tauri::command]
 pub async fn plugin_api_catalog() -> Result<serde_json::Value, String> {
-    let url = "https://infra.xibeai.in/api/managed-mcp/catalog";
+    let url = "https://raw.githubusercontent.com/iotserver24/supercharge-app/28a365592f2271a88909178621000b24e5373157/public/managed-mcp/catalog.json";
     let response = reqwest::Client::new()
         .get(url)
         .timeout(std::time::Duration::from_secs(10))
