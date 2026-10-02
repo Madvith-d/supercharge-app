@@ -13,6 +13,12 @@ See `docs/llm-wiki/release.md`.
 
 ## [Unreleased]
 
+### Fixed
+- Windows window controls and folder pickers respond more reliably under load.
+
+### Changed
+- Project and model selection respond sooner, with less background work while idle.
+
 ## [0.2.47] - 2026-10-02
 
 > **Highlight:** CLI conversations appear automatically alongside App chats, including with custom providers.

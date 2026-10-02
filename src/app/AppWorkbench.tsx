@@ -2156,7 +2156,6 @@ export function AppWorkbench() {
   useEffect(() => {
     if (!api.isDesktopHost() || !api.isTauri()) return;
     let unlistenResize: (() => void) | undefined;
-    let unlistenMoved: (() => void) | undefined;
     let unlistenScale: (() => void) | undefined;
     let resizeSyncTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
@@ -2186,13 +2185,6 @@ export function AppWorkbench() {
           syncMaximizedAfterResize();
         });
         try {
-          unlistenMoved = await w.onMoved(() => {
-            syncMaximizedAfterResize();
-          });
-        } catch {
-          /* older API */
-        }
-        try {
           unlistenScale = await w.onScaleChanged(() => {
             void sync();
           });
@@ -2201,7 +2193,6 @@ export function AppWorkbench() {
         }
         if (cancelled) {
           unlistenResize?.();
-          unlistenMoved?.();
           unlistenScale?.();
         }
       } catch {
@@ -2212,7 +2203,6 @@ export function AppWorkbench() {
       cancelled = true;
       if (resizeSyncTimer != null) clearTimeout(resizeSyncTimer);
       unlistenResize?.();
-      unlistenMoved?.();
       unlistenScale?.();
     };
   }, []);
@@ -9260,12 +9250,7 @@ export function AppWorkbench() {
       setModelPickBusy(true);
       try {
         if (pick.kind === "official") {
-          if (providerActiveSource === "custom" && api.isTauri()) {
-            await api.providersActivate("official");
-            await refreshProviderRoute();
-          }
           if (!isValidModelId(pick.modelId, availableModels)) return;
-          setModelId(pick.modelId);
           const targetOfficial = effortCatalogForRoute({
             model: findModel(pick.modelId, availableModels),
           });
@@ -9274,7 +9259,13 @@ export function AppWorkbench() {
             targetOfficial,
             channelEffortOptions ?? officialEffortCatalog,
           );
+          // Paint the selection before provider activation recycles agents.
+          setModelId(pick.modelId);
           setEffort(clampedOfficial);
+          if (providerActiveSource === "custom" && api.isTauri()) {
+            await api.providersActivate("official");
+            await refreshProviderRoute();
+          }
           void api
             .composerPrefsSet({
               projectId: activeProject?.id ?? null,
@@ -9305,6 +9296,16 @@ export function AppWorkbench() {
             modelId: pick.modelId,
             models: catalog,
           });
+          const nextEfforts =
+            effortOptionsFromProvider(appliedLive.efforts) ?? GROK_BUILD_EFFORTS;
+          const clampedCustom = mapEffortToTargetCatalog(
+            effort,
+            nextEfforts,
+            channelEffortOptions ?? officialEffortCatalog,
+          );
+          // Paint selection before host config writes and agent recycling.
+          setModelId(pick.modelId);
+          setEffort(clampedCustom);
           if (provider.model.trim() !== pick.modelId.trim()) {
             await api.providersUpsert({
               id: provider.id,
@@ -9337,15 +9338,6 @@ export function AppWorkbench() {
             }
           }
           await refreshProviderRoute();
-          // Map effort into the picked model's catalog (Grok ↔ DeepSeek tiers).
-          const nextEfforts =
-            effortOptionsFromProvider(appliedLive.efforts) ?? GROK_BUILD_EFFORTS;
-          const clampedCustom = mapEffortToTargetCatalog(
-            effort,
-            nextEfforts,
-            channelEffortOptions ?? officialEffortCatalog,
-          );
-          setEffort(clampedCustom);
           void api
             .composerPrefsSet({
               projectId: activeProject?.id ?? null,
@@ -9357,6 +9349,8 @@ export function AppWorkbench() {
         }
       } catch (e) {
         showToast(String(e), 4000);
+        // Reconcile optimistic selection with the Host after a failed write.
+        void refreshProviderRoute();
       } finally {
         setModelPickBusy(false);
       }
@@ -9711,20 +9705,26 @@ export function AppWorkbench() {
    */
   const finalizeAddedProject = useCallback(
     async (p: Project, opts: { bindSession: boolean }) => {
-      const list = mapProjectsList((await api.projectsList()) as Project[]);
-        setProjects(list);
+      // Use the persisted project_add result without redundant list reads.
+      const mergeProject = (project: Project) => {
+        setProjects((current) =>
+          mapProjectsList([
+            ...current.filter((entry) => entry.id !== project.id),
+            project,
+          ]),
+        );
+      };
+      mergeProject(p);
       projectSpaces.assignNewProjects([p.id]);
       setSetup((s) => ({ ...s, project: true }));
 
       const apply = async (proj: Project) => {
-        const fresh = mapProjectsList((await api.projectsList()) as Project[]);
-        setProjects(fresh);
-        const current = fresh.find((x) => x.id === proj.id) ?? proj;
+        mergeProject(proj);
         if (opts.bindSession) {
-          await bindSessionProject(current);
+          await bindSessionProject(proj);
         } else {
-          setActiveProject(current);
-          setExpandedProjects((e) => ({ ...e, [current.id]: true }));
+          setActiveProject(proj);
+          setExpandedProjects((e) => ({ ...e, [proj.id]: true }));
         }
       };
 
@@ -9815,7 +9815,6 @@ export function AppWorkbench() {
    */
   const addProjectFromPicker = useCallback(
     async (opts: { bindSession: boolean; autoTrust?: boolean }) => {
-      setLocalError(null);
       try {
         if (isMirrorClient()) {
           showToast(tr("mirror.desktopOnly"), 3200);
@@ -9829,6 +9828,7 @@ export function AppWorkbench() {
         if (!path) return;
         const p = (await api.projectAdd(path, !!opts.autoTrust)) as Project;
         await finalizeAddedProject(p, { bindSession: opts.bindSession });
+        setLocalError(null);
       } catch (e) {
         const code =
           e && typeof e === "object" && "code" in e

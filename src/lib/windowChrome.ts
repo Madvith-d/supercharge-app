@@ -11,6 +11,8 @@
  * (window grows downward; you cannot lift it).
  */
 
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { windowCaptionAction } from "@/lib/api/system";
 import type { AppPlatform } from "@/lib/appPlatform";
 import { detectAppPlatform } from "@/lib/appPlatform";
 
@@ -164,6 +166,14 @@ async function waitForOsMaximized(
   }
 }
 
+export async function minimizeWindowReliable(): Promise<void> {
+  if (detectAppPlatform() === "win") {
+    await windowCaptionAction("minimize");
+    return;
+  }
+  await getCurrentWindow().minimize();
+}
+
 /**
  * Maximize / restore. Prefers the OS API; on Linux Wayland no-ops, fills
  * the work area and treats that as maximized until the next toggle.
@@ -171,11 +181,10 @@ async function waitForOsMaximized(
  * state is synchronized separately from IPC completion.
  */
 export async function toggleMaximizeReliable(): Promise<boolean | void> {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const w = getCurrentWindow();
   const platform = detectAppPlatform();
   if (platform === "win") {
-    await w.toggleMaximize();
+    await windowCaptionAction("toggleMaximize");
     fakeMaximized = false;
     restoreBounds = null;
     return;

@@ -403,6 +403,7 @@ export function PetMark({
     }
 
     let raf = 0;
+    let idleTimer = 0;
     let hoverSince = 0;
     let emoteMood = "";
     let emoteUntil = 0;
@@ -597,8 +598,20 @@ export function PetMark({
 
     let lastPaint = 0;
     let idleSince = performance.now();
-    const tick = (ms: number) => {
-      const nowMs = performance.now();
+    const scheduleNext = (delayMs: number, animate: boolean) => {
+      if (animate) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        // Avoid waking WebView2 on every display refresh while the mark is
+        // resting. Idle still ticks for timed emotes, but only at paint cadence.
+        idleTimer = window.setTimeout(tick, Math.max(0, delayMs));
+      }
+    };
+    const tick = () => {
+      raf = 0;
+      idleTimer = 0;
+      const ms = performance.now();
+      const nowMs = ms;
       const trackingLook = !!readLocalLook(nowMs);
       const morphing =
         wantSpinRef.current !== playedSpinRef.current ||
@@ -626,24 +639,34 @@ export function PetMark({
         idleMs: nowMs - idleSince,
       });
       if (lastPaint && ms - lastPaint < minMs) {
-        raf = requestAnimationFrame(tick);
+        const animate = minMs <= 33;
+        scheduleNext(minMs - (ms - lastPaint), animate);
         return;
       }
       const dt = lastPaint ? Math.min((ms - lastPaint) / 1000, 0.064) : 0;
       lastPaint = ms;
       clockRef.current += dt;
       paint(clockRef.current, dt);
-      raf = requestAnimationFrame(tick);
+      const animate =
+        spin != null ||
+        wantSpinRef.current !== playedSpinRef.current ||
+        engine.isMorphing(clockRef.current) ||
+        draggingRef.current ||
+        bloubStateNeedsLivePaint(engine.state) ||
+        orbit.hasLife() ||
+        !!readLocalLook(performance.now());
+      scheduleNext(minMs, animate);
     };
     const startTick = () => {
-      if (raf) return;
+      if (raf || idleTimer) return;
       lastPaint = 0;
       raf = requestAnimationFrame(tick);
     };
     const stopTick = () => {
-      if (!raf) return;
-      cancelAnimationFrame(raf);
+      if (raf) cancelAnimationFrame(raf);
+      if (idleTimer) window.clearTimeout(idleTimer);
       raf = 0;
+      idleTimer = 0;
       orbit.clear();
     };
     const onVisibility = () => {

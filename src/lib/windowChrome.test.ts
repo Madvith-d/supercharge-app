@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CAPTION_BUTTON_TOGGLE_DEFER_MS,
   isFakeMaximized,
+  minimizeWindowReliable,
   resetWindowChromeTestState,
   toggleMaximizeReliable,
   maximizeLooksNoop,
@@ -17,6 +18,8 @@ import {
 
 const host = vi.hoisted(() => ({
   platform: "win",
+  captionAction: vi.fn(),
+  minimize: vi.fn(),
   isMaximized: vi.fn(),
   toggleMaximize: vi.fn(),
   maximize: vi.fn(),
@@ -33,6 +36,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   currentMonitor: host.currentMonitor,
 }));
 vi.mock("@/lib/appPlatform", () => ({ detectAppPlatform: () => host.platform }));
+vi.mock("@/lib/api/system", () => ({ windowCaptionAction: host.captionAction }));
 
 describe("toggleMaximizeReliable", () => {
   beforeEach(() => {
@@ -62,7 +66,8 @@ describe("toggleMaximizeReliable", () => {
 
   it("delegates Windows toggling to the native command without a frontend state query", async () => {
     await toggleMaximizeReliable();
-    expect(host.toggleMaximize).toHaveBeenCalledTimes(1);
+    expect(host.captionAction).toHaveBeenCalledExactlyOnceWith("toggleMaximize");
+    expect(host.toggleMaximize).not.toHaveBeenCalled();
     expect(host.isMaximized).not.toHaveBeenCalled();
     expect(host.maximize).not.toHaveBeenCalled();
     expect(host.unmaximize).not.toHaveBeenCalled();
@@ -72,9 +77,29 @@ describe("toggleMaximizeReliable", () => {
 
   it("propagates a rejected Windows toggle instead of returning an intended state", async () => {
     const error = new Error("toggle denied");
-    host.toggleMaximize.mockRejectedValueOnce(error);
+    host.captionAction.mockRejectedValueOnce(error);
     await expect(toggleMaximizeReliable()).rejects.toBe(error);
     expect(host.isMaximized).not.toHaveBeenCalled();
+  });
+
+  it("routes Windows minimize directly to the caption command", async () => {
+    await minimizeWindowReliable();
+    expect(host.captionAction).toHaveBeenCalledExactlyOnceWith("minimize");
+    expect(host.minimize).not.toHaveBeenCalled();
+    expect(host.isMaximized).not.toHaveBeenCalled();
+  });
+
+  it.each(["mac", "linux"])("preserves native minimize on %s", async (platform) => {
+    host.platform = platform;
+    await minimizeWindowReliable();
+    expect(host.minimize).toHaveBeenCalledTimes(1);
+    expect(host.captionAction).not.toHaveBeenCalled();
+  });
+
+  it("propagates a rejected Windows minimize", async () => {
+    const error = new Error("minimize denied");
+    host.captionAction.mockRejectedValueOnce(error);
+    await expect(minimizeWindowReliable()).rejects.toBe(error);
   });
 
   it.each([false, true])("preserves macOS maximize/restore without work-area fill (%s)", async (was) => {

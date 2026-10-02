@@ -386,17 +386,17 @@ pub async fn path_reveal(path: String) -> Result<(), String> {
 /// Add project via native folder dialog; optional auto-trust.
 #[tauri::command]
 pub async fn project_add_dialog(trust: bool) -> Result<Option<Project>, String> {
-    let folder = tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_title("添加项目 / Add project")
-            .pick_folder()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some(path) = folder else {
+    let folder = rfd::AsyncFileDialog::new()
+        .set_title("添加项目 / Add project")
+        .pick_folder()
+        .await;
+    let Some(handle) = folder else {
         return Ok(None);
     };
-    let p = store::add_project(path.display().to_string(), trust)?;
-    Ok(Some(p))
+    let path = handle.path().display().to_string();
+    let project = tauri::async_runtime::spawn_blocking(move || store::add_project(path, trust))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(Some(project))
 }
 

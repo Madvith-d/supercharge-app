@@ -21,6 +21,9 @@ const host = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => host }));
 vi.mock("@/lib/appPlatform", () => ({ detectAppPlatform: () => host.platform }));
+vi.mock("@/lib/api/system", () => ({
+  windowCaptionAction: (action: "minimize" | "toggleMaximize") => host[action](),
+}));
 vi.mock("@/components/ui/tooltip", () => ({ Tip: ({ children }: { children: ReactNode }) => children }));
 
 const labels = { minimize: "Minimize", maximize: "Maximize", restore: "Restore", close: "Close" };

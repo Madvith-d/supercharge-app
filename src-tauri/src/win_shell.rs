@@ -17,7 +17,7 @@
 #![cfg(windows)]
 
 use std::os::windows::ffi::OsStrExt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 use tauri::{Manager, WebviewWindow};
 use windows::core::PCWSTR;
@@ -29,13 +29,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{ExtractIconExW, SetCurrentProcessExplicitAppUserModelID};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DrawMenuBar, GetClassNameW, GetPropW, GetWindow, GetWindowLongPtrW,
-    GetWindowLongW, GetWindowThreadProcessId, IsChild, IsWindow, IsWindowVisible, RemovePropW,
-    SendMessageW, SetClassLongPtrW, SetMenu, SetPropW, SetWindowLongPtrW, SetWindowLongW,
-    SetWindowPos, GCLP_HICON, GCLP_HICONSM, GWLP_HWNDPARENT, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE,
-    GW_CHILD, GW_HWNDNEXT, GW_OWNER, HICON, HWND_NOTOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WA_ACTIVE, WA_CLICKACTIVE, WM_ACTIVATE, WM_NCDESTROY,
-    WM_SETFOCUS, WM_SETICON, WNDPROC, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    GetWindowLongW, GetWindowThreadProcessId, IsChild, IsWindow, IsWindowVisible, IsZoomed,
+    RemovePropW, SendMessageW, SetClassLongPtrW, SetMenu, SetPropW, SetWindowLongPtrW,
+    SetWindowLongW, SetWindowPos, ShowWindowAsync, GCLP_HICON, GCLP_HICONSM, GWLP_HWNDPARENT,
+    GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, GW_OWNER, HICON, HWND_NOTOPMOST,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE,
+    SW_MINIMIZE, SW_RESTORE, WA_ACTIVE, WA_CLICKACTIVE, WM_ACTIVATE, WM_NCDESTROY, WM_SETFOCUS,
+    WM_SETICON, WNDPROC, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX,
+    WS_MINIMIZEBOX,
 };
 
 /// Call once early in process startup (before or right after creating the main window).
@@ -58,6 +59,43 @@ pub fn set_process_app_user_model_id(id: &str) {
 /// so the host must notice the button release itself.
 pub fn primary_mouse_button_down() -> bool {
     unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) < 0 }
+}
+
+/// Cached main HWND for latency-critical caption actions.
+///
+/// Tauri's window API sends another user event through the tao event loop.
+/// Under WebView/resize load that second queue can be delayed or coalesced.
+/// `ShowWindowAsync` posts directly to the HWND owner thread and never waits
+/// for it, so a caption click cannot be trapped behind unrelated app events.
+static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+
+pub fn post_main_caption_action(action: &str) -> Result<(), String> {
+    let raw = MAIN_HWND.load(Ordering::Acquire);
+    if raw == 0 {
+        return Err("main window handle is not ready".into());
+    }
+    let hwnd = HWND(raw as *mut std::ffi::c_void);
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            MAIN_HWND.store(0, Ordering::Release);
+            return Err("main window handle is no longer valid".into());
+        }
+        let command = match action {
+            "minimize" => SW_MINIMIZE,
+            "toggleMaximize" => {
+                if IsZoomed(hwnd).as_bool() {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                }
+            }
+            _ => return Err(format!("unsupported caption action: {action}")),
+        };
+        if !ShowWindowAsync(hwnd, command).as_bool() {
+            return Err("could not post caption action to the main window".into());
+        }
+    }
+    Ok(())
 }
 
 /// Dispatch before looking up the HWND: Tauri's off-thread HWND getter can wait.
@@ -242,6 +280,7 @@ pub fn set_main_window_skip_taskbar(window: &WebviewWindow, skip: bool) {
 }
 
 fn ensure_hwnd_shell_integration(hwnd: HWND) {
+    MAIN_HWND.store(hwnd.0 as isize, Ordering::Release);
     apply_exe_window_icons(hwnd);
     unsafe {
         // Clear accidental owner (GWLP_HWNDPARENT on a top-level window is the owner).

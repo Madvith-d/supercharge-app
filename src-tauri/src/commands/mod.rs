@@ -13,6 +13,7 @@ use crate::cli_probe::{self, CliProbeResult};
 use crate::session_manager::{SessionManager, SessionSnapshot};
 use crate::store::{self, AppSettings, Project, SessionMeta};
 
+include!("window.rs");
 include!("session_p1.rs");
 include!("session_p2.rs");
 include!("workspace.rs");

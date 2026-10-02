@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   isFakeMaximized,
+  minimizeWindowReliable,
   scheduleCaptionButtonToggle,
   toggleMaximizeReliable,
 } from "@/lib/windowChrome";
@@ -85,7 +86,7 @@ export function useWindowCaptionControls(visible: boolean) {
         const w = await host;
         if (disposed) return;
         if (action === "toggleMaximize") await toggleMaximizeReliable();
-        else if (action === "minimize") await w.minimize();
+        else if (action === "minimize") await minimizeWindowReliable();
         else await w.close();
       } catch (error) {
         console.warn(`[WindowControls] ${action} failed`, error);

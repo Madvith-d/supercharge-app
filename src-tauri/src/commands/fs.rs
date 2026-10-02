@@ -1,15 +1,15 @@
 #[tauri::command]
 pub async fn pick_directory() -> Result<Option<String>, String> {
-    // rfd must run off the async runtime (main-thread dialog on macOS via spawn_blocking)
-    let folder = tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_title("选择项目目录 / Choose project folder")
-            .pick_folder()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(folder.map(|p| {
-        crate::path_scope::grant_path(&p);
+    // AsyncFileDialog owns a dedicated STA thread on Windows. Tokio blocking
+    // workers may already be MTA-initialized, which makes IFileDialog fail or
+    // appear only after a long delay (RPC_E_CHANGED_MODE).
+    let folder = rfd::AsyncFileDialog::new()
+        .set_title("选择项目目录 / Choose project folder")
+        .pick_folder()
+        .await;
+    Ok(folder.map(|handle| {
+        let p = handle.path();
+        crate::path_scope::grant_path(p);
         p.display().to_string()
     }))
 }
@@ -17,18 +17,16 @@ pub async fn pick_directory() -> Result<Option<String>, String> {
 /// Native multi-file picker for composer attachments. Returns empty vec if cancelled.
 #[tauri::command]
 pub async fn pick_attach_files() -> Result<Vec<String>, String> {
-    let files = tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_title("附加文件 / Attach files")
-            .pick_files()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let files = rfd::AsyncFileDialog::new()
+        .set_title("附加文件 / Attach files")
+        .pick_files()
+        .await;
     Ok(files
         .unwrap_or_default()
         .into_iter()
-        .map(|p| {
-            crate::path_scope::grant_path(&p);
+        .map(|handle| {
+            let p = handle.path();
+            crate::path_scope::grant_path(p);
             p.display().to_string()
         })
         .collect())
@@ -37,14 +35,15 @@ pub async fn pick_attach_files() -> Result<Vec<String>, String> {
 /// Native folder picker for attaching a directory as `@path` (optional).
 #[tauri::command]
 pub async fn pick_attach_folder() -> Result<Option<String>, String> {
-    let folder = tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_title("附加文件夹 / Attach folder")
-            .pick_folder()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(folder.map(|p| { crate::path_scope::grant_path(&p); p.display().to_string() }))
+    let folder = rfd::AsyncFileDialog::new()
+        .set_title("附加文件夹 / Attach folder")
+        .pick_folder()
+        .await;
+    Ok(folder.map(|handle| {
+        let p = handle.path();
+        crate::path_scope::grant_path(p);
+        p.display().to_string()
+    }))
 }
 
 /// Save clipboard / webview File bytes into app attachments dir; return classified path.
