@@ -13,7 +13,7 @@ pub fn window_caption_action(
         if window.label() != "main" {
             return Err("caption action is only available for the main window".into());
         }
-        return crate::win_shell::post_main_caption_action(&action);
+        crate::win_shell::post_main_caption_action(&action)
     }
 
     #[cfg(not(windows))]
