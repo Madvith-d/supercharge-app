@@ -8,8 +8,8 @@
       "description": "A local, non-destructive echo tool for verifying an agent's MCP connection.",
       "source": {
         "type": "archive",
-        "url": "https://raw.githubusercontent.com/iotserver24/supercharge-app/f10a3af801bbb61b8ae914db93a84f8f817489c7/public/managed-mcp/vectra-echo-1.0.0.tar.gz",
-        "sha256": "578d7f83a97d3a4d1d84a96d859dea53f9d1a3a7b53ae85d5beb01c61e917017"
+        "url": "https://raw.githubusercontent.com/iotserver24/supercharge-app/379e0d2789ac918e327e5ef1fef5cc2991a431a7/public/managed-mcp/vectra-echo-1.0.0.tar.gz",
+        "sha256": "a0c6be6c2f292c1a1ecdcc55056147d1dd232b58c76522e77ad44016ee7c0072"
       }
     }
   ]
