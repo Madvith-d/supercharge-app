@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "vectra-echo",
+  "name": "Echo MCP",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "description": "A local, non-destructive echo tool for verifying an agent's MCP connection.",
+  "permissions": ["mcp:stdio"],
+  "components": [],
+  "mcpServers": {
+    "echo": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/mcp.mjs"],
+      "env": {}
+    }
+  },
+  "hooks": [],
+  "userConfig": {}
+}
